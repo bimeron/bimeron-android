@@ -1,0 +1,15 @@
+<resources>
+    <string name="trojan_form_server">Server</string>
+    <string name="trojan_form_port">Port</string>
+    <string name="trojan_form_password">Password</string>
+    <string name="trojan_form_server_name">TLS server name</string>
+    <string name="trojan_form_network">Transport</string>
+    <string name="trojan_form_security">Security</string>
+    <string name="trojan_form_alpn">ALPN (comma separated)</string>
+    <string name="trojan_form_ws_path">WebSocket path</string>
+    <string name="trojan_form_ws_host">WebSocket host</string>
+    <string name="trojan_form_grpc_service">gRPC service name</string>
+    <string name="trojan_form_grpc_authority">gRPC authority</string>
+    <string name="trojan_form_grpc_multi">gRPC multi mode</string>
+    <string name="trojan_form_hint">Trojan always verifies TLS. Transport changes retain existing fields; clear incompatible fields explicitly. Unsupported options require protected Raw configuration.</string>
+</resources>

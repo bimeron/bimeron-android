@@ -1,0 +1,7 @@
+<resources>
+ <color name="bimeron_icon_background">#EAF2FF</color>
+ <color name="bimeron_launch_background">#EAF2FF</color>
+ <color name="bimeron_loading_track">#CADBF2</color>
+ <color name="bimeron_loading_foreground">#111820</color>
+ <color name="bimeron_accent">#287BFF</color>
+</resources>

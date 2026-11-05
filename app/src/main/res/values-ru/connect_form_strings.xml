@@ -1,0 +1,9 @@
+<resources>
+    <string name="connect_form_server">Сервер</string>
+    <string name="connect_form_port">Порт</string>
+    <string name="connect_form_username">Имя пользователя</string>
+    <string name="connect_form_password">Пароль</string>
+    <string name="connect_form_server_name">Имя сервера TLS (пусто — адрес сервера)</string>
+    <string name="connect_form_ca_file">Путь к файлу CA (абсолютный)</string>
+    <string name="connect_form_masque_path">Шаблон пути MASQUE (пусто — по умолчанию)</string>
+</resources>

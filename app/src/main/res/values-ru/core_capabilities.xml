@@ -1,0 +1,23 @@
+<resources>
+    <string name="core_version">bimeron-core: %1$s</string>
+    <string name="core_platform">Платформа: %1$s</string>
+    <string name="core_unknown">Неизвестно</string>
+    <string name="core_supported">Поддерживается</string>
+    <string name="core_unsupported">Не поддерживается</string>
+    <string name="core_support_row">%1$s: %2$s</string>
+    <string name="core_vpn">VPN</string>
+    <string name="core_proxy">Прокси</string>
+    <string name="core_ipv4">IPv4</string>
+    <string name="core_ipv6">IPv6</string>
+    <string name="core_ip_split">Маршрутизация IP</string>
+    <string name="core_domain_split">Маршрутизация доменов</string>
+    <string name="core_geoip_split">Маршрутизация GeoIP</string>
+    <string name="core_geosite_split">Маршрутизация GeoSite</string>
+    <string name="core_app_split">Маршрутизация приложений</string>
+    <string name="core_kill_switch">Блокировка при обрыве</string>
+    <string name="core_daemon">Фоновая служба</string>
+    <string name="core_ikev2">Системный IKEv2</string>
+    <string name="core_build_note">Поддержка встроенной сборкой не гарантирует доступность сервера или предоставление разрешений.</string>
+    <string name="core_vpn_incompatible">Ядро не сообщает о поддержке Android VPN одновременно с IPv4 и IPv6.</string>
+    <string name="core_schema">Схема GeoData: %1$s</string>
+</resources>

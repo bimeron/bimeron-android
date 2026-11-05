@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Connection log entries recorded by the app. -->
+    <string name="journal_profile_save_error">Ошибка сохранения профиля</string>
+    <string name="journal_profile_delete_error">Ошибка удаления профиля</string>
+    <string name="journal_profile_deleted">Профиль удалён</string>
+    <string name="journal_vpn_permission_denied">Разрешение VPN отклонено</string>
+    <string name="journal_recovery_save_failed">Не удалось сохранить состояние восстановления VPN</string>
+    <string name="journal_vpn_connecting">Подключение VPN начато</string>
+    <string name="journal_vpn_connected">VPN подключён</string>
+    <string name="journal_vpn_reconnecting">VPN переподключается</string>
+    <string name="journal_vpn_stopping">Отключение VPN</string>
+    <string name="journal_vpn_disconnected">VPN отключён</string>
+    <string name="journal_vpn_failed">Ошибка VPN</string>
+    <string name="journal_vpn_failed_detail">Ошибка VPN: %1$s</string>
+</resources>

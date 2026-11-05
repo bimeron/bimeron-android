@@ -1,0 +1,9 @@
+<resources>
+    <string name="connect_form_server">Server</string>
+    <string name="connect_form_port">Port</string>
+    <string name="connect_form_username">Username</string>
+    <string name="connect_form_password">Password</string>
+    <string name="connect_form_server_name">TLS server name (blank uses server address)</string>
+    <string name="connect_form_ca_file">CA file path (absolute)</string>
+    <string name="connect_form_masque_path">MASQUE path template (blank uses default)</string>
+</resources>

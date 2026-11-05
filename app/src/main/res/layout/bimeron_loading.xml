@@ -1,0 +1,4 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:background="@color/bimeron_launch_background" android:padding="24dp">
+ <ImageView android:id="@+id/bimeron_loading_mark" android:layout_width="110dp" android:layout_height="110dp" android:src="@drawable/bimeron_loading_animation" android:contentDescription="@string/bimeron_loading_accessibility" android:scaleType="fitCenter"/>
+ <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="43dp" android:text="@string/bimeron_brand_name" android:textSize="33sp" android:textColor="@color/bimeron_loading_foreground" android:fontFamily="sans"/>
+</LinearLayout>

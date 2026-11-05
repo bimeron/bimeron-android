@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Connection log entries recorded by the app. -->
+    <string name="journal_profile_save_error">Profile save error</string>
+    <string name="journal_profile_delete_error">Profile delete error</string>
+    <string name="journal_profile_deleted">Profile deleted</string>
+    <string name="journal_vpn_permission_denied">VPN permission denied</string>
+    <string name="journal_recovery_save_failed">Could not save VPN recovery state</string>
+    <string name="journal_vpn_connecting">VPN connection started</string>
+    <string name="journal_vpn_connected">VPN connected</string>
+    <string name="journal_vpn_reconnecting">VPN reconnecting</string>
+    <string name="journal_vpn_stopping">Disconnecting VPN</string>
+    <string name="journal_vpn_disconnected">VPN disconnected</string>
+    <string name="journal_vpn_failed">VPN error</string>
+    <string name="journal_vpn_failed_detail">VPN error: %1$s</string>
+</resources>

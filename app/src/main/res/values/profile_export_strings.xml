@@ -1,0 +1,6 @@
+<resources>
+    <string name="export_selected_profile">Export selected profile</string>
+    <string name="export_warning">The file contains unencrypted access keys and other secrets. Anyone with the file can read them. Save it only in a trusted location. Continue?</string>
+    <string name="export_success">Profile exported</string>
+    <string name="export_failure">Could not export the profile. Select a profile and retry export. The file may be empty or incomplete.</string>
+</resources>

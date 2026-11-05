@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="bimeron_brand_name" translatable="false">Bimeron</string>
+    <string name="bimeron_loading_accessibility">Loading</string>
+</resources>

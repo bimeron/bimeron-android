@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Profile parsing, validation and storage messages. -->
+    <string name="profile_error_file_too_large">File is larger than 64 KiB</string>
+    <string name="profile_error_not_utf8">File must be UTF-8 encoded</string>
+    <string name="profile_error_invalid_name">Name must be 1 to 128 characters long without control characters</string>
+    <string name="profile_error_unsupported_key_scheme">Unsupported key scheme</string>
+    <string name="profile_error_invalid_key">Invalid key or link</string>
+    <string name="profile_error_invalid_quoted_value">Invalid quoted value</string>
+    <string name="profile_error_invalid_escape">Invalid escape sequence</string>
+    <string name="profile_error_unknown_section_line">Unknown section on line %1$d</string>
+    <string name="profile_error_duplicate_section_line">Duplicate section on line %1$d</string>
+    <string name="profile_error_syntax_line">Syntax error on line %1$d</string>
+    <string name="profile_error_duplicate_field_line">Duplicate field on line %1$d</string>
+    <string name="profile_error_version_required">Version = 1 is required</string>
+    <string name="profile_error_missing_name">Profile name is missing</string>
+    <string name="profile_error_single_key_source">Exactly one key source is required</string>
+    <string name="profile_error_invalid_mode">Mode must be vpn or proxy</string>
+    <string name="profile_error_mtu_not_integer">MTU must be an integer</string>
+    <string name="profile_error_invalid_interface_name">Invalid interface name</string>
+    <string name="profile_error_mtu_range">MTU must be between 1280 and 1500</string>
+    <string name="profile_error_invalid_interface">Invalid interface parameters</string>
+    <string name="profile_error_invalid_default_route">Invalid default route</string>
+    <string name="profile_error_invalid_dns">DNS must contain 1–4 unique IPv4 addresses</string>
+    <string name="profile_error_invalid_rule">Invalid rule %1$d</string>
+    <string name="profile_error_invalid_rule_domain">Invalid domain in rule %1$d</string>
+    <string name="profile_error_invalid_rule_cidr">Invalid CIDR in rule %1$d</string>
+    <string name="profile_error_profile_name_field_missing">Name is missing in [Profile]</string>
+    <string name="profile_error_access_key_file_missing">File not found in [AccessKey]</string>
+    <string name="profile_error_profile_section_missing">Section [Profile] is missing</string>
+    <string name="profile_error_embed_key_file">The external key file must be embedded in the configuration</string>
+    <string name="profile_error_core_rejected_line">The core rejected the configuration on line %1$d</string>
+    <string name="profile_error_core_rejected">The core did not accept the configuration. Check the key, parameters and VPN mode; KillSwitch must be false</string>
+    <string name="profile_error_open_document">Could not open the document</string>
+    <string name="profile_error_config_line">Configuration error on line %1$d</string>
+    <string name="profile_error_unterminated_disabled_rule">Unterminated disabled rule block</string>
+    <string name="profile_default_name">Profile</string>
+    <string name="profile_save_failed">Could not save the profile</string>
+    <string name="profile_delete_failed">Could not delete the profile</string>
+    <string name="profile_no_longer_exists">The profile no longer exists</string>
+    <string name="profile_delete_vpn_stop_failed">Could not disconnect VPN. The profile was not deleted</string>
+    <string name="profiles_load_failed">Could not load profiles</string>
+    <string name="profile_select_failed">Could not select the profile</string>
+    <string name="profile_switch_failed">Could not switch the profile</string>
+    <string name="profile_added">Profile added</string>
+    <string name="profile_imported">Profile imported</string>
+    <string name="ssh_error_prepare_files">Could not prepare SSH files</string>
+</resources>

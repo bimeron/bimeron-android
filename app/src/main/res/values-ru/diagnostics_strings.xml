@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="diag_share">Поделиться</string>
+    <string name="diag_save">Сохранить</string>
+    <string name="diag_clear">Очистить</string>
+    <string name="diag_clear_confirm">Очистить журнал?</string>
+    <string name="diag_privacy_note">Отчёт содержит версии приложения и ядра, сведения об Android и сети и журнал. Ключи, пароли, токены, адреса серверов, IP-адреса и пути к файлам скрываются.</string>
+    <string name="diag_share_title">Отправить диагностику</string>
+    <string name="diag_share_subject">Диагностика Bimeron</string>
+    <string name="diag_share_failed">Не удалось подготовить отчёт</string>
+    <string name="diag_saved">Отчёт сохранён</string>
+    <string name="diag_save_failed">Не удалось сохранить отчёт</string>
+    <string name="diag_settings_title">Журнал</string>
+    <string name="diag_level_title">Подробность</string>
+    <string name="diag_level_warning">Только ошибки и предупреждения</string>
+    <string name="diag_level_info">Обычная</string>
+    <string name="diag_level_debug">Подробная, включая изменения сети</string>
+    <string name="diag_limit_title">Размер журнала</string>
+    <string name="diag_limit_500">До 500 записей</string>
+    <string name="diag_limit_1000">До 1000 записей</string>
+    <string name="diag_limit_5000">До 5000 записей</string>
+    <string name="diag_keep_previous">Сохранять предыдущие записи</string>
+    <string name="diag_keep_previous_hint">Если выключено, журнал очищается при новом подключении</string>
+    <string name="diag_level_tag_error">ОШИБКА</string>
+    <string name="diag_level_tag_warning">ПРЕДУПРЕЖДЕНИЕ</string>
+    <string name="diag_level_tag_debug">ОТЛАДКА</string>
+    <string name="diag_network_validated">Сеть по умолчанию: %1$s, доступ в интернет подтверждён</string>
+    <string name="diag_network_unvalidated">Сеть по умолчанию: %1$s, доступ в интернет не подтверждён</string>
+    <string name="diag_network_lost">Сеть по умолчанию потеряна</string>
+</resources>

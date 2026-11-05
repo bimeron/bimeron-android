@@ -1,0 +1,10 @@
+<resources>
+    <!-- TalkBack descriptions and traffic units for the main screens. -->
+    <string name="a11y_profiles_heading">Profiles: %1$d</string>
+    <string name="a11y_expanded">List expanded</string>
+    <string name="a11y_collapsed">List collapsed</string>
+    <string name="a11y_session_duration">Session duration %1$s</string>
+    <string name="unit_bytes">%1$d B</string>
+    <string name="unit_kilobytes">%1$.1f KB</string>
+    <string name="unit_megabytes">%1$.1f MB</string>
+</resources>

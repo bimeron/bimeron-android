@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="diag_share">Share</string>
+    <string name="diag_save">Save</string>
+    <string name="diag_clear">Clear</string>
+    <string name="diag_clear_confirm">Clear the log?</string>
+    <string name="diag_privacy_note">The report contains app and core versions, Android and network details, and the log. Keys, passwords, tokens, server addresses, IP addresses and file paths are hidden.</string>
+    <string name="diag_share_title">Send diagnostics</string>
+    <string name="diag_share_subject">Bimeron diagnostics</string>
+    <string name="diag_share_failed">Could not prepare the report</string>
+    <string name="diag_saved">Report saved</string>
+    <string name="diag_save_failed">Could not save the report</string>
+    <string name="diag_settings_title">Log</string>
+    <string name="diag_level_title">Detail level</string>
+    <string name="diag_level_warning">Errors and warnings only</string>
+    <string name="diag_level_info">Normal</string>
+    <string name="diag_level_debug">Verbose, including network changes</string>
+    <string name="diag_limit_title">Log size</string>
+    <string name="diag_limit_500">Up to 500 entries</string>
+    <string name="diag_limit_1000">Up to 1000 entries</string>
+    <string name="diag_limit_5000">Up to 5000 entries</string>
+    <string name="diag_keep_previous">Keep previous entries</string>
+    <string name="diag_keep_previous_hint">When off, the log is cleared when a new connection starts</string>
+    <string name="diag_level_tag_error">ERROR</string>
+    <string name="diag_level_tag_warning">WARNING</string>
+    <string name="diag_level_tag_debug">DEBUG</string>
+    <string name="diag_network_validated">Default network: %1$s, internet access validated</string>
+    <string name="diag_network_unvalidated">Default network: %1$s, internet access not validated</string>
+    <string name="diag_network_lost">Default network lost</string>
+</resources>

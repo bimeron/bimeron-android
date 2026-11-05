@@ -1,0 +1,12 @@
+<resources>
+    <string name="shadowtls_title">ShadowTLS v3</string>
+    <string name="shadowtls_guidance">Draft settings: use the public ShadowTLS listener as the inner profile’s server and port. The handshake name and password are independent of inner credentials. Inner encryption and server verification remain required. ShadowTLS carries no native UDP; compatible inner protocols retain UDP over streams. Saving settings does not verify Android connection support.</string>
+    <string name="shadowtls_raw_only">These settings require protected Raw configuration. Existing values are retained.</string>
+    <string name="shadowtls_raw">Raw configuration</string>
+    <string name="shadowtls_add">Add ShadowTLS draft</string>
+    <string name="shadowtls_name">ShadowTLS handshake name</string>
+    <string name="shadowtls_password">ShadowTLS password</string>
+    <string name="shadowtls_show">Show</string>
+    <string name="shadowtls_hide">Hide</string>
+    <string name="shadowtls_invalid">Enter a valid ShadowTLS handshake name and a nonempty password.</string>
+</resources>

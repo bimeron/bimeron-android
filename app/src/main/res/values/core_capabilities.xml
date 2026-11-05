@@ -1,0 +1,23 @@
+<resources>
+    <string name="core_version">bimeron-core: %1$s</string>
+    <string name="core_platform">Platform: %1$s</string>
+    <string name="core_unknown">Unknown</string>
+    <string name="core_supported">Supported</string>
+    <string name="core_unsupported">Not supported</string>
+    <string name="core_support_row">%1$s: %2$s</string>
+    <string name="core_vpn">VPN</string>
+    <string name="core_proxy">Proxy</string>
+    <string name="core_ipv4">IPv4</string>
+    <string name="core_ipv6">IPv6</string>
+    <string name="core_ip_split">IP routing</string>
+    <string name="core_domain_split">Domain routing</string>
+    <string name="core_geoip_split">GeoIP routing</string>
+    <string name="core_geosite_split">GeoSite routing</string>
+    <string name="core_app_split">App routing</string>
+    <string name="core_kill_switch">Kill switch</string>
+    <string name="core_daemon">Daemon</string>
+    <string name="core_ikev2">System IKEv2</string>
+    <string name="core_build_note">Embedded build support does not guarantee a working server or granted permissions.</string>
+    <string name="core_vpn_incompatible">This core does not report Android VPN support with both IPv4 and IPv6.</string>
+    <string name="core_schema">GeoData schema: %1$s</string>
+</resources>

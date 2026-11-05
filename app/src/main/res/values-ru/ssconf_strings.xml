@@ -1,0 +1,9 @@
+<resources>
+    <string name="ssconf_source">Источник SSConf</string>
+    <string name="ssconf_show">Показать источник</string>
+    <string name="ssconf_hide">Скрыть источник</string>
+    <string name="ssconf_raw_only">Этот источник можно редактировать только в исходной конфигурации.</string>
+    <string name="ssconf_raw_config">Исходная конфигурация</string>
+    <string name="ssconf_local_only">Проверяется только формат ссылки. Доступность и подключение здесь не проверяются.</string>
+    <string name="ssconf_invalid">Некорректная ссылка SSConf. Нужен адрес ssconf:// с хостом, без учётных данных и пробельных символов.</string>
+</resources>

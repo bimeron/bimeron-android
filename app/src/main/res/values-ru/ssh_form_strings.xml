@@ -1,0 +1,8 @@
+<resources>
+    <string name="ssh_form_server">Сервер</string>
+    <string name="ssh_form_port">Порт</string>
+    <string name="ssh_form_username">Имя пользователя</string>
+    <string name="ssh_form_identity_file">Путь к закрытому ключу (IdentityFile)</string>
+    <string name="ssh_form_known_hosts_file">Путь к known_hosts (KnownHostsFile)</string>
+    <string name="ssh_form_hint">Работают только доступные приложению абсолютные пути файловой системы Android. URI content:// (SAF) и file:// не являются прямыми путями; пути с ~ и относительные пути здесь не поддерживаются. В текущей версии нет импорта SSH-файлов и запросов пароля, keyboard-interactive или парольной фразы зашифрованного ключа. Импорт ожидает интеграции Core и управления ресурсами профиля. Пустые пути оставляют выбор файлов по умолчанию за Core; их наличие и доступность не гарантируются.</string>
+</resources>

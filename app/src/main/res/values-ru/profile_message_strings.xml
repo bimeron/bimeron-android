@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Profile parsing, validation and storage messages. -->
+    <string name="profile_error_file_too_large">Файл больше 64 КиБ</string>
+    <string name="profile_error_not_utf8">Файл должен быть в UTF-8</string>
+    <string name="profile_error_invalid_name">Название должно содержать от 1 до 128 символов без управляющих знаков</string>
+    <string name="profile_error_unsupported_key_scheme">Неподдерживаемая схема ключа</string>
+    <string name="profile_error_invalid_key">Некорректный ключ или ссылка</string>
+    <string name="profile_error_invalid_quoted_value">Некорректное значение в кавычках</string>
+    <string name="profile_error_invalid_escape">Некорректная escape-последовательность</string>
+    <string name="profile_error_unknown_section_line">Неизвестная секция в строке %1$d</string>
+    <string name="profile_error_duplicate_section_line">Повтор секции в строке %1$d</string>
+    <string name="profile_error_syntax_line">Ошибка синтаксиса в строке %1$d</string>
+    <string name="profile_error_duplicate_field_line">Повтор поля в строке %1$d</string>
+    <string name="profile_error_version_required">Требуется Version = 1</string>
+    <string name="profile_error_missing_name">Отсутствует название профиля</string>
+    <string name="profile_error_single_key_source">Требуется ровно один источник ключа</string>
+    <string name="profile_error_invalid_mode">Режим должен быть vpn или proxy</string>
+    <string name="profile_error_mtu_not_integer">MTU должен быть целым числом</string>
+    <string name="profile_error_invalid_interface_name">Некорректное имя интерфейса</string>
+    <string name="profile_error_mtu_range">MTU должен быть от 1280 до 1500</string>
+    <string name="profile_error_invalid_interface">Некорректные параметры интерфейса</string>
+    <string name="profile_error_invalid_default_route">Некорректный маршрут по умолчанию</string>
+    <string name="profile_error_invalid_dns">DNS должен содержать 1–4 уникальных IPv4-адреса</string>
+    <string name="profile_error_invalid_rule">Некорректное правило %1$d</string>
+    <string name="profile_error_invalid_rule_domain">Некорректный домен в правиле %1$d</string>
+    <string name="profile_error_invalid_rule_cidr">Некорректный CIDR в правиле %1$d</string>
+    <string name="profile_error_profile_name_field_missing">В [Profile] отсутствует Name</string>
+    <string name="profile_error_access_key_file_missing">Не найден File в [AccessKey]</string>
+    <string name="profile_error_profile_section_missing">Отсутствует секция [Profile]</string>
+    <string name="profile_error_embed_key_file">Внешний файл ключа нужно встроить в конфигурацию</string>
+    <string name="profile_error_core_rejected_line">Ядро отклонило конфигурацию в строке %1$d</string>
+    <string name="profile_error_core_rejected">Конфигурация не принята ядром. Проверьте ключ, параметры и режим VPN; KillSwitch должен быть false</string>
+    <string name="profile_error_open_document">Не удалось открыть документ</string>
+    <string name="profile_error_config_line">Ошибка конфигурации в строке %1$d</string>
+    <string name="profile_error_unterminated_disabled_rule">Незавершённый блок отключённого правила</string>
+    <string name="profile_default_name">Профиль</string>
+    <string name="profile_save_failed">Не удалось сохранить профиль</string>
+    <string name="profile_delete_failed">Не удалось удалить профиль</string>
+    <string name="profile_no_longer_exists">Профиль больше не существует</string>
+    <string name="profile_delete_vpn_stop_failed">Не удалось отключить VPN. Профиль не удалён</string>
+    <string name="profiles_load_failed">Не удалось загрузить профили</string>
+    <string name="profile_select_failed">Не удалось выбрать профиль</string>
+    <string name="profile_switch_failed">Не удалось переключить профиль</string>
+    <string name="profile_added">Профиль добавлен</string>
+    <string name="profile_imported">Профиль импортирован</string>
+    <string name="ssh_error_prepare_files">Не удалось подготовить SSH-файлы</string>
+</resources>

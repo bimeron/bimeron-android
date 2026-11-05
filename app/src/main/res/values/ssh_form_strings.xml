@@ -1,0 +1,8 @@
+<resources>
+    <string name="ssh_form_server">Server</string>
+    <string name="ssh_form_port">Port</string>
+    <string name="ssh_form_username">Username</string>
+    <string name="ssh_form_identity_file">Private key path (IdentityFile)</string>
+    <string name="ssh_form_known_hosts_file">Known hosts path (KnownHostsFile)</string>
+    <string name="ssh_form_hint">Only absolute Android filesystem paths readable by this app work. content:// (SAF) and file:// URIs are not direct paths; tilde and relative paths are not supported here. The current version has no SSH file import or password, keyboard-interactive, or encrypted-key passphrase prompts. Import awaits Core integration and profile resource lifecycle support. Empty paths leave default file selection to Core; file availability and readability are not guaranteed.</string>
+</resources>

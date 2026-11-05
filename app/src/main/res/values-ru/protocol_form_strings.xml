@@ -1,0 +1,16 @@
+<resources>
+    <string name="protocol_form_server">Сервер</string>
+    <string name="protocol_form_port">Порт</string>
+    <string name="protocol_form_method">Метод</string>
+    <string name="protocol_form_username">Имя пользователя</string>
+    <string name="protocol_form_password">Пароль</string>
+    <string name="protocol_form_prefix">Префикс</string>
+    <string name="protocol_form_plugin">Плагин</string>
+    <string name="protocol_form_options">Параметры плагина</string>
+    <string name="protocol_form_show">Показать</string>
+    <string name="protocol_form_hide">Скрыть</string>
+    <string name="protocol_form_raw_only">Эти параметры нельзя безопасно представить формой. Используйте Raw: неизвестный метод, плагин, управляющие символы или Prefix с SS2022.</string>
+    <string name="protocol_form_invalid">Проверьте конфигурацию: сервер, порт 1–65535, пароль и параметры протокола. Для SOCKS5 укажите оба поля авторизации (до 255 байт каждое) либо оставьте оба пустыми.</string>
+    <string name="protocol_form_failed">Не удалось проверить или сохранить конфигурацию. Проверьте параметры и повторите попытку.</string>
+    <string name="protocol_form_plugin_hint">Параметры SIP003 сохраняются буквально. tls=false включает WSS; TLS obfs-local — маскировка, а не TLS с проверкой сертификата. Плагины передают только TCP.</string>
+</resources>

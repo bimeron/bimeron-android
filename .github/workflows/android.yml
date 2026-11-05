@@ -1,0 +1,77 @@
+name: Android CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the policy check can inspect every pushed or PR commit.
+          fetch-depth: 0
+      - name: Repository policy
+        run: |
+          python3 scripts/test_check_repo_policy.py
+          python3 scripts/check_repo_policy.py
+      - name: Verify pinned core AAR
+        run: python3 scripts/verify_core_aar.py
+      - name: CI self-check
+        run: |
+          python3 scripts/test_verify_core_aar.py
+          python3 scripts/test_native_alignment.py
+          python3 scripts/test_connected_test_runner.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and test
+        run: ./gradlew --no-daemon --stacktrace --continue :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+      - name: Upload unit and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bimeron-unit-lint-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/lint-results-debug.*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bimeron-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Emulator profile tests
+        env:
+          DIAG_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          disable-linux-hw-accel: false
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          script: python3 scripts/connected_test_runner.py
+      - name: Retain connected test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bimeron-connected-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          path: |
+            ci-diagnostics/metadata.json
+            app/build/outputs/androidTest-results/connected/**/TEST-*.xml
+            app/build/reports/androidTests/connected/**/*.html
+            app/build/reports/androidTests/connected/**/*.css
+            app/build/reports/androidTests/connected/**/*.js

@@ -1,0 +1,16 @@
+<resources>
+    <string name="protocol_form_server">Server</string>
+    <string name="protocol_form_port">Port</string>
+    <string name="protocol_form_method">Method</string>
+    <string name="protocol_form_username">Username</string>
+    <string name="protocol_form_password">Password</string>
+    <string name="protocol_form_prefix">Prefix</string>
+    <string name="protocol_form_plugin">Plugin</string>
+    <string name="protocol_form_options">Plugin options</string>
+    <string name="protocol_form_show">Show</string>
+    <string name="protocol_form_hide">Hide</string>
+    <string name="protocol_form_raw_only">These settings require Raw: unsupported method, plugin, control characters, or SS2022 with Prefix.</string>
+    <string name="protocol_form_invalid">Check configuration: server, port 1–65535, password and protocol settings. SOCKS5 requires both authentication fields (up to 255 bytes each), or both empty.</string>
+    <string name="protocol_form_failed">Could not validate or save the configuration. Check the settings and try again.</string>
+    <string name="protocol_form_plugin_hint">SIP003 options are preserved literally. tls=false enables WSS; obfs-local TLS is camouflage, not verified TLS. Plugins carry TCP only.</string>
+</resources>

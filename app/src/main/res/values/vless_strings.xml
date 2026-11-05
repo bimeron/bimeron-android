@@ -1,0 +1,22 @@
+<resources>
+    <string name="vless_id">ID</string>
+    <string name="vless_encryption">Encryption</string>
+    <string name="vless_network">Transport</string>
+    <string name="vless_security">Security</string>
+    <string name="vless_flow">Flow</string>
+    <string name="vless_server_name">Server name</string>
+    <string name="vless_fingerprint">TLS fingerprint</string>
+    <string name="vless_public_key">REALITY public key</string>
+    <string name="vless_short_id">REALITY short ID</string>
+    <string name="vless_spider_x">SpiderX</string>
+    <string name="vless_alpn">ALPN</string>
+    <string name="vless_ws_path">WebSocket path</string>
+    <string name="vless_ws_host">WebSocket host</string>
+    <string name="vless_early_data">WebSocket early data</string>
+    <string name="vless_service">gRPC service name</string>
+    <string name="vless_authority">gRPC authority</string>
+    <string name="vless_multi">gRPC multi mode</string>
+    <string name="vless_xhttp_path">XHTTP path</string>
+    <string name="vless_xhttp_host">XHTTP host</string>
+    <string name="vless_xhttp_mode">XHTTP mode</string>
+</resources>

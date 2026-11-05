@@ -1,0 +1,16 @@
+<resources>
+    <string name="other_uri_raw_only">This URI requires raw editing. Its original content is preserved.</string>
+    <string name="other_uri_raw">Open raw configuration</string>
+    <string name="other_uri_host">Server</string>
+    <string name="other_uri_port">Port</string>
+    <string name="other_uri_username">Username / UUID</string>
+    <string name="other_uri_password">Password</string>
+    <string name="other_uri_option">Option</string>
+    <string name="other_uri_show">Show</string>
+    <string name="other_uri_hide">Hide</string>
+    <string name="other_uri_invalid">Check the URI settings. Some values are invalid or unsupported.</string>
+    <string name="other_uri_native">Native validation is required before saving. URI support does not guarantee a successful connection.</string>
+    <string name="other_uri_pending">Unapplied edits. Save uses the last applied settings. Apply valid edits before saving.</string>
+    <string name="other_uri_apply">Apply</string>
+    <string name="other_uri_revert">Revert</string>
+</resources>

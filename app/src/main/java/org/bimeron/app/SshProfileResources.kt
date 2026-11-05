@@ -1,0 +1,245 @@
+package org.bimeron.app
+
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardOpenOption.READ
+import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
+
+/** App-private imports; startup sweep runs only before the singleton exposes imports. */
+class SshProfileResources(private val root: File) {
+    enum class Kind(internal val filename: String) { IDENTITY("identity"), KNOWN_HOSTS("known_hosts") }
+    class StagedToken internal constructor(internal val owner: Any, internal val kind: Kind, internal val file: File) {
+        /** Retained after publication, even if prepare throws; abort only while config is unsaved. */
+        var prepared: OwnedGeneration? = null
+            internal set
+    }
+    class OwnedGeneration internal constructor(
+        internal val owner: Any, val kind: Kind, val path: String, val profileId: UUID,
+    )
+    private val owner = Any()
+    private val base = root.absoluteFile.toPath().normalize().toFile()
+    internal var publish: (File, File) -> Unit = { source, target ->
+        Files.move(source.toPath(), target.toPath(), ATOMIC_MOVE)
+    }
+
+    internal var syncDirectory: (File) -> Unit = { file ->
+        FileChannel.open(file.toPath(), READ).use { it.force(true) }
+    }
+
+    @Synchronized fun stage(kind: Kind, input: InputStream): StagedToken = safe {
+        var directory: File? = null
+        try {
+            input.use { source ->
+                privateDirectory(base)
+                val staging = File(base, "staging").also(::privateDirectory)
+                directory = File(staging, UUID.randomUUID().toString()).also(::privateDirectory)
+                val file = File(directory, kind.filename)
+                Files.createFile(file.toPath(), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+                FileOutputStream(file).use { output ->
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = source.read(buffer, 0, minOf(buffer.size, LIMIT + 1 - total))
+                        if (count < 0) break
+                        if (count == 0) {
+                            val byte = source.read()
+                            if (byte < 0) break
+                            output.write(byte)
+                            total++
+                        } else {
+                            output.write(buffer, 0, count)
+                            total += count
+                        }
+                        if (total > LIMIT) throw IOException()
+                    }
+                    if (total == 0) throw IOException()
+                    output.fd.sync()
+                }
+                StagedToken(owner, kind, file)
+            }
+        } catch (e: Exception) {
+            directory?.let { runCatching { removeTree(it) } }
+            throw e
+        }
+    }
+
+    /** Publish before saving config. On failure retain the token for retry. To cancel before saving,
+     * abort token.prepared if present (publication may precede failure); otherwise discard the token.
+     * After saving, use afterSaved instead of aborting a generation referenced by config.
+     */
+    @Synchronized fun prepare(profileId: UUID, token: StagedToken): OwnedGeneration = safe {
+        require(token.owner === owner)
+        token.prepared?.let {
+            require(it.profileId == profileId)
+            checked(File(it.path)); require(File(it.path).isFile)
+            syncPublished(it)
+            return@safe it
+        }
+        checked(token.file); require(token.file.isFile)
+        val profiles = File(base, "profiles").also(::privateDirectory)
+        val profile = File(profiles, profileId.toString()).also(::privateDirectory)
+        val target = File(profile, UUID.randomUUID().toString())
+        syncDirectory(token.file.parentFile)
+        val handle = OwnedGeneration(owner, token.kind, File(target, token.kind.filename).absolutePath, profileId)
+        try {
+            publish(token.file.parentFile, target)
+        } catch (e: Exception) {
+            // A publisher can fail after rename; retain the moved generation for retry.
+            checked(target)
+            if (target.isDirectory && !token.file.parentFile.exists()) token.prepared = handle
+            throw e
+        }
+        token.prepared = handle
+        syncPublished(handle)
+        handle
+    }
+
+    private fun syncPublished(handle: OwnedGeneration) {
+        val generation = File(handle.path).parentFile
+        checked(generation)
+        syncDirectory(generation)
+        val staging = File(base, "staging")
+        checked(staging)
+        syncDirectory(staging)
+        var directory = generation.parentFile
+        while (true) {
+            checked(directory)
+            syncDirectory(directory)
+            if (directory == base) break
+            directory = directory.parentFile
+        }
+        // Publish the owned root's entry too; its parent must already exist.
+        val parent = base.parentFile
+        require(parent.isDirectory)
+        syncDirectory(parent)
+    }
+
+    @Synchronized fun discard(token: StagedToken): Unit = safe {
+        require(token.owner === owner)
+        if (token.prepared == null) removeTree(token.file.parentFile)
+    }
+
+    /** Terminal abandonment only: a token whose generation was aborted cannot be retried. */
+    @Synchronized fun abort(handle: OwnedGeneration): Unit = safe {
+        require(handle.owner === owner)
+        require(ownedPath(handle.profileId, handle.path) != null)
+        removeTree(File(handle.path).parentFile)
+    }
+
+    /** Pass ALL identity and known-hosts references. Unknown paths conservatively prevent pruning. */
+    @Synchronized fun afterSaved(profileId: UUID, referencedPaths: Set<String>): Unit = safe {
+        val referenced = referencedPaths.map { ownedPath(profileId, it) ?: return@safe }.toSet()
+        val profile = profileDirectory(profileId)
+        checked(profile)
+        if (!profile.exists()) return@safe
+        val generations = profile.listFiles() ?: throw IOException()
+        // Validate the entire set before any removal; unexpected entries are retained.
+        if (generations.any { !generation(it) }) return@safe
+        generations.filter { it.absolutePath !in referenced }.forEach(::removeTree)
+    }
+
+    @Synchronized fun afterDeleted(profileId: UUID): Unit = safe {
+        removeTree(profileDirectory(profileId))
+    }
+
+    /** Only at singleton initialization before imports exist. Null means config inventory incomplete. */
+    @Synchronized fun sweepBeforeDrafts(committedReferences: Map<UUID, Set<String>>?): Unit = safe {
+        if (committedReferences == null) return@safe
+        checked(base)
+        if (!base.exists()) return@safe
+        require(base.isDirectory)
+        val staging = File(base, "staging")
+        val profiles = File(base, "profiles")
+        val rootEntries = base.listFiles() ?: throw IOException()
+        rootEntries.forEach(::checked)
+        if (rootEntries.any { it != staging && it != profiles }) return@safe
+        val references = committedReferences.mapValues { (id, paths) ->
+            paths.map { ownedPath(id, it) ?: return@safe }.toSet()
+        }
+        val candidates = mutableListOf<File>()
+        if (staging.exists()) {
+            checked(staging)
+            require(staging.isDirectory)
+            val entries = staging.listFiles() ?: throw IOException()
+            if (entries.any { !generation(it) }) return@safe
+            candidates.addAll(entries)
+        }
+        if (profiles.exists()) {
+            checked(profiles)
+            require(profiles.isDirectory)
+            val entries = profiles.listFiles() ?: throw IOException()
+            entries.forEach(::checked)
+            if (entries.any { !uuid(it.name) || !it.isDirectory }) return@safe
+            entries.forEach { profile ->
+                val generations = profile.listFiles() ?: throw IOException()
+                if (generations.any { !generation(it) }) return@safe
+                val keep = references[UUID.fromString(profile.name)].orEmpty()
+                candidates.addAll(generations.filter { it.absolutePath !in keep })
+            }
+        }
+        // Every candidate and retained entry has been checked before the first deletion.
+        candidates.forEach(::removeTree)
+    }
+
+    private fun profileDirectory(id: UUID) = File(base, "profiles/$id")
+    private fun ownedPath(id: UUID, path: String): String? {
+        val file = File(path)
+        if (!file.isAbsolute || file.absoluteFile.toPath().normalize().toString() != path) return null
+        val directory = file.parentFile ?: return null
+        if (directory.parentFile != profileDirectory(id) || !uuid(directory.name)) return null
+        if (Kind.entries.none { it.filename == file.name }) return null
+        checked(file)
+        return directory.absolutePath
+    }
+    private fun generation(file: File): Boolean {
+        checked(file)
+        if (!uuid(file.name) || !file.isDirectory) return false
+        val entries = file.listFiles() ?: return false
+        return entries.size == 1 && entries.all { child ->
+            checked(child)
+            child.isFile && Kind.entries.any { it.filename == child.name }
+        }
+    }
+    private fun uuid(value: String) = runCatching { UUID.fromString(value).toString() == value }.getOrDefault(false)
+    private fun checked(file: File) {
+        val path = file.absoluteFile.toPath().normalize()
+        require(path.startsWith(base.toPath()))
+        var ancestor: java.nio.file.Path? = path
+        while (ancestor != null) {
+            require(!Files.isSymbolicLink(ancestor))
+            ancestor = ancestor.parent
+        }
+        require(file.canonicalFile == file.absoluteFile)
+    }
+    private fun privateDirectory(file: File) {
+        checked(file)
+        if (!file.exists()) require(file.mkdir())
+        require(file.isDirectory)
+        Files.setPosixFilePermissions(file.toPath(), PosixFilePermissions.fromString("rwx------"))
+    }
+    private fun removeTree(file: File) {
+        checked(file)
+        if (!Files.exists(file.toPath(), NOFOLLOW_LINKS)) return
+        fun validate(entry: File) {
+            checked(entry)
+            if (entry.isDirectory) (entry.listFiles() ?: throw IOException()).forEach(::validate)
+        }
+        validate(file)
+        fun delete(entry: File) {
+            if (entry.isDirectory) (entry.listFiles() ?: throw IOException()).forEach(::delete)
+            if (!entry.delete()) throw IOException()
+        }
+        delete(file)
+    }
+    private inline fun <T> safe(block: () -> T): T = try { block() } catch (_: Exception) {
+        throw IOException("SSH resource operation failed")
+    }
+    private companion object { const val LIMIT = 64 * 1024 }
+}
