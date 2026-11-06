@@ -55,7 +55,7 @@ class SshAuthenticationTest {
         entered.await(); c.submit { _, _, _ -> fail(); false }
         c.feed(wire("c".repeat(48))); c.answer(0, "new")
         release.complete(Unit); work.join()
-        assertEquals(listOf("new"), c.answers); assertFalse(c.failed)
+        assertEquals(listOf("new"), c.answers); assertFalse(c.replyRejected)
         var cancels = 0
         c.cancel { _, _ -> cancels++; true }; c.cancel { _, _ -> cancels++; true }
         c.feed(wire("c".repeat(48))); assertNull(c.request); assertEquals(1, cancels)
@@ -68,7 +68,7 @@ class SshAuthenticationTest {
         c.cancel(old) { _, _ -> fail(); false }
         assertEquals("c".repeat(48), c.request!!.requestId)
         c.submit { _, _, _ -> error("synthetic secret exception") }
-        assertTrue(c.failed); assertTrue(c.answers.isEmpty())
+        assertTrue(c.replyRejected); assertTrue(c.answers.isEmpty())
         assertEquals("c".repeat(48), c.request!!.requestId); assertFalse(c.canSubmit); assertFalse(c.busy)
     }
     @Test fun invalidatedRequestCannotReviveAnswersOrCallbacks() = runBlocking {
@@ -93,8 +93,10 @@ class SshAuthenticationTest {
     @Test fun changedImmutableRequestRetiresItsId() {
         val c = SshAuthenticationController(); c.feed(wire()); c.answer(0, "old secret")
         c.feed(wire(prompts = "[\"Changed\"]"))
-        assertTrue(c.failed); assertNull(c.request); assertTrue(c.answers.isEmpty())
+        assertFalse(c.replyRejected); assertNull(c.request); assertTrue(c.answers.isEmpty())
         c.feed(wire()); assertNull(c.request); assertTrue(c.answers.isEmpty())
+        // An invalid change is not a reply rejection and must not leak into the next request.
+        c.feed(wire("c".repeat(48))); assertNotNull(c.request); assertFalse(c.replyRejected)
     }
     @Test fun controllerIsSessionScopedAndRetainsAllEightRetiredIds() {
         val c = SshAuthenticationController()
@@ -114,21 +116,21 @@ class SshAuthenticationTest {
     @Test fun rejectedReplyMarksFailedAndKeepsHintForNextRequest() = runBlocking {
         val c = SshAuthenticationController(); c.feed(wire()); c.answer(0, "secret")
         c.submit { _, _, _ -> false }
-        assertTrue(c.failed); assertFalse(c.busy); assertFalse(c.canSubmit); assertTrue(c.answers.isEmpty())
+        assertTrue(c.replyRejected); assertFalse(c.busy); assertFalse(c.canSubmit); assertTrue(c.answers.isEmpty())
         assertEquals("b".repeat(48), c.request!!.requestId)
         c.answer(0, "retry"); assertTrue(c.answers.isEmpty())
         c.submit { _, _, _ -> fail(); true }
-        c.feed(wire()); assertTrue(c.failed)
-        c.feed(wire("c".repeat(48))); assertTrue(c.failed); assertTrue(c.canSubmit)
+        c.feed(wire()); assertTrue(c.replyRejected)
+        c.feed(wire("c".repeat(48))); assertTrue(c.replyRejected); assertTrue(c.canSubmit)
         c.answer(0, "next"); c.submit { _, _, _ -> true }
-        assertFalse(c.failed); assertTrue(c.busy)
-        c.feed(wire("d".repeat(48))); assertFalse(c.failed)
-        c.feed(null); assertNull(c.request); assertFalse(c.failed)
+        assertFalse(c.replyRejected); assertTrue(c.busy)
+        c.feed(wire("d".repeat(48))); assertFalse(c.replyRejected)
+        c.feed(null); assertNull(c.request); assertFalse(c.replyRejected)
     }
     @Test fun acceptedReplyStaysBusyUntilNextFeed() = runBlocking {
         val c = SshAuthenticationController(); c.feed(wire()); c.answer(0, "secret")
         c.submit { _, _, _ -> true }
-        assertTrue(c.busy); assertFalse(c.failed); assertNotNull(c.request); assertFalse(c.canSubmit)
+        assertTrue(c.busy); assertFalse(c.replyRejected); assertNotNull(c.request); assertFalse(c.canSubmit)
         c.cancel { _, _ -> fail(); true }; assertTrue(c.busy)
         c.feed(wire()); assertTrue(c.busy)
         c.feed(wire("c".repeat(48))); assertFalse(c.busy); assertTrue(c.canSubmit)
@@ -144,7 +146,7 @@ class SshAuthenticationTest {
             entered.await(); c.feed(wire("c".repeat(48)))
             release.complete(Unit); work.join()
             assertEquals("c".repeat(48), c.request!!.requestId)
-            assertFalse(c.failed); assertFalse(c.busy); assertTrue(c.canSubmit)
+            assertFalse(c.replyRejected); assertFalse(c.busy); assertTrue(c.canSubmit)
         }
     }
     @Test fun lateReplyOnDisposedControllerDoesNotLeakIntoReplacement() = runBlocking {
@@ -154,20 +156,36 @@ class SshAuthenticationTest {
         entered.await(); old.dispose()
         val replacement = SshAuthenticationController(); replacement.feed(wire())
         release.complete(Unit); work.join()
-        assertFalse(old.failed); assertNull(old.request)
-        assertFalse(replacement.failed); assertTrue(replacement.canSubmit)
+        assertFalse(old.replyRejected); assertNull(old.request)
+        assertFalse(replacement.replyRejected); assertTrue(replacement.canSubmit)
     }
-    @Test fun rejectedCancelMarksFailedUnlessSuperseded() = runBlocking {
+    @Test fun rejectedCancelStaysVisibleAndIsNeverCarriedOver() = runBlocking {
+        val c = SshAuthenticationController(); c.feed(wire()); c.answer(0, "secret")
+        var cancels = 0
+        c.cancel { _, _ -> cancels++; false }
+        assertTrue(c.cancelFailed); assertFalse(c.replyRejected); assertFalse(c.busy); assertFalse(c.canSubmit)
+        assertEquals("b".repeat(48), c.request!!.requestId); assertTrue(c.answers.isEmpty())
+        c.feed(wire("c".repeat(48)))
+        assertFalse(c.cancelFailed); assertFalse(c.replyRejected); assertTrue(c.canSubmit)
+        c.cancel { _, _ -> cancels++; false }; assertTrue(c.cancelFailed)
+        // A second cancel after a rejected one closes locally without calling the host.
+        c.cancel { _, _ -> cancels++; true }
+        assertNull(c.request); assertFalse(c.cancelFailed); assertEquals(2, cancels)
+        c.feed(wire("d".repeat(48))); assertFalse(c.cancelFailed); assertFalse(c.replyRejected)
+        c.cancel { _, _ -> error("synthetic secret exception") }; assertTrue(c.cancelFailed)
+        c.feed(null); assertNull(c.request); assertFalse(c.cancelFailed)
+    }
+    @Test fun supersededCancelResultIsIgnored() = runBlocking {
         val c = SshAuthenticationController(); c.feed(wire())
-        c.cancel { _, _ -> false }
-        assertNull(c.request); assertTrue(c.failed)
-        c.feed(wire("c".repeat(48))); assertTrue(c.failed)
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val work = launch { c.cancel { _, _ -> entered.complete(Unit); release.await(); false } }
-        entered.await(); c.feed(wire("d".repeat(48)))
+        entered.await(); assertTrue(c.busy); c.feed(wire("c".repeat(48)))
         release.complete(Unit); work.join()
-        assertFalse(c.failed); assertEquals("d".repeat(48), c.request!!.requestId)
-        c.cancel { _, _ -> error("synthetic secret exception") }; assertTrue(c.failed)
-        c.feed(null); assertFalse(c.failed)
+        assertFalse(c.cancelFailed); assertEquals("c".repeat(48), c.request!!.requestId); assertTrue(c.canSubmit)
+    }
+    @Test fun acceptedCancelHidesRequest() = runBlocking {
+        val c = SshAuthenticationController(); c.feed(wire(prompts = "[\"Code\"]")); c.answer(0, "secret")
+        c.cancel { _, _ -> true }
+        assertNull(c.request); assertTrue(c.answers.isEmpty()); assertFalse(c.cancelFailed)
     }
 }
