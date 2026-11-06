@@ -131,6 +131,15 @@ states, headings, live regions, selection groups, targets ≥ 48 dp),
 `A11yLargeFontTest` (at `fontScale = 2.0` and 360 dp width no text on home, empty
 home, settings or log is clipped or overflows), `A11yContrastTest` (both themes).
 
+### Languages
+
+On Android 13+ (API 35 emulator), Settings → Apps → Bimeron → Language lists
+English and Russian; selecting each switches the app UI, and
+`cmd locale get-app-locales` / `set-app-locales` report and apply the same value.
+`LocaleConfigTest` (JVM) checks that the merged manifest's `android:localeConfig`
+lists exactly `en` and `ru`; `LocaleConfigInstrumentedTest` checks the same through
+the platform `LocaleConfig` API on API 33+ devices.
+
 ### Diagnostics and log export
 
 Log levels and size, keeping previous entries, clearing, report export through
