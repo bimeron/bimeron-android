@@ -167,7 +167,7 @@ class BimeronVpnService : VpnService() {
                 is Command.Invalid -> {
                     acceptedStartId = command.startId
                     if (runJob == null) {
-                        if (command.reportError) VpnLive.publish(failureState(VpnErrorCode.INVALID_PROFILE), VpnLive.gate.next())
+                        if (command.reportError) VpnLive.publish(failureState(VpnErrorCode.INVALID_PROFILE), VpnLive.nextAttempt())
                         leaveForeground(command.startId)
                     }
                 }
@@ -175,7 +175,8 @@ class BimeronVpnService : VpnService() {
                     acceptedStartId = command.startId
                     val current = VpnLive.state.value
                     if (!command.force && runJob?.isActive == true && command.id == (current.activeProfileId ?: current.attemptProfileId)) continue
-                    val token = VpnLive.gate.next()
+                    // A new token cannot clear the old offer, so it is cleared with the gate advance.
+                    val token = VpnLive.nextAttempt()
                     runJob?.cancelAndJoin()
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
@@ -197,7 +198,7 @@ class BimeronVpnService : VpnService() {
                     runJob = scope.launch { runSession(command.id, token) }
                 }
                 is Command.Stop -> {
-                    val token = VpnLive.gate.next()
+                    val token = VpnLive.nextAttempt()
                     val old = VpnLive.state.value
                     if (runJob != null) VpnLive.publish(old.copy(state = "stopping", message = null, code = null), token)
                     runJob?.cancelAndJoin()
@@ -330,11 +331,18 @@ class BimeronVpnService : VpnService() {
                 .addAddress("fdfe:524c::1", 128).addRoute("::", 0)
                 .addDnsServer("198.18.0.2").establish() ?: throw SessionFailure(VpnErrorCode.TUN_FAILED)
             session.start()
+            val auth = AuthAttempt(token, SessionAuthPort(session),
+                isOpen = { !closing.get() && VpnLive.gate.accepts(token) },
+                onCancelled = {
+                    stopAfterUserCancel(id, token, getString(VpnErrorCode.AUTH_CANCELLED.messageRes), ownerJob)
+                })
+            VpnAuthEndpoint.register(token, auth)
             while (currentCoroutineContext().isActive) {
-                val state = publishStatus(session, id, token)
+                auth.poll()
+                val state = publishStatus(session, id, token, auth)
                 if (state == "connected") break
                 if (state == "failed" || state == "disconnected") throw SessionFailure(VpnErrorCode.CORE_CONNECT_FAILED)
-                delay(200)
+                delay(statusTickMillis(connected = false, token))
             }
             currentCoroutineContext().ensureActive()
             val descriptor = tun
@@ -370,9 +378,10 @@ class BimeronVpnService : VpnService() {
                 }
             }
             while (currentCoroutineContext().isActive) {
-                val state = publishStatus(session, id, token)
+                auth.poll()
+                val state = publishStatus(session, id, token, auth)
                 if (state == "failed" || state == "disconnected") throw SessionFailure(VpnErrorCode.CORE_CONNECT_FAILED)
-                delay(500)
+                delay(statusTickMillis(connected = true, token))
             }
         } catch (e: CancellationException) {
             throw e
@@ -383,6 +392,9 @@ class BimeronVpnService : VpnService() {
         } finally {
             withContext(NonCancellable + Dispatchers.IO) {
                 synchronized(networkLock) { closing.set(true); physical = null }
+                // Terminal auth cleanup precedes native stop and Command.Finished.
+                VpnAuthEndpoint.unregister(token)
+                VpnLive.publishAuth(token, null)
                 callback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
                 runCatching { tun?.close() }
                 packetScope.cancel()
@@ -397,7 +409,7 @@ class BimeronVpnService : VpnService() {
         VpnLive.protection.value = if (android.os.Build.VERSION.SDK_INT >= 29) isAlwaysOn to isLockdownEnabled else null
     }
 
-    private fun publishStatus(session: Session, id: String, token: Long): String {
+    private fun publishStatus(session: Session, id: String, token: Long, auth: AuthAttempt): String {
         if (!VpnLive.gate.accepts(token)) return "disconnected"
         if (VpnLive.state.value.state == "failed" && VpnLive.state.value.attemptProfileId == id) return "failed"
         updateProtection()
@@ -406,11 +418,19 @@ class BimeronVpnService : VpnService() {
         val state = normalizeCoreState(status.optString("State"))
         val stats = json.optJSONObject("stats")?.takeUnless { it.optBoolean("unavailable") }
         val lastError = status.optString("LastError").takeIf { it.isNotBlank() }
-        val code = coreFailureCode(state, lastError)
+        val code = coreFailureCode(state, lastError, auth.history)
         val safeError = code?.let { getString(it.messageRes) }
-        return VpnLive.publishCoreStatus(token, id, state,
+        val published = VpnLive.publishCoreStatus(token, id, state,
             stats?.optLong("bytes_down") ?: 0, stats?.optLong("bytes_up") ?: 0,
             SystemClock.elapsedRealtime(), safeError, code)
+        if (published == "connected") auth.connected()
+        return published
+    }
+
+    private class SessionAuthPort(private val session: Session) : CoreSessionPort {
+        override fun pendingAuth(): String? = session.pendingAuth()
+        override fun replyAuth(sessionId: String, requestId: String, answers: String) = session.replyAuth(sessionId, requestId, answers)
+        override fun cancelAuth(sessionId: String, requestId: String) = session.cancelAuth(sessionId, requestId)
     }
 
     override fun onRevoke() {
@@ -423,6 +443,7 @@ class BimeronVpnService : VpnService() {
         destroyed = true
         invalidateResolvers(SSConfDiagnostic.SERVICE_DESTROYED)
         scope.cancel()
+        VpnLive.clearAuth()
         if (started) {
             VpnLive.serviceDestroyed(getString(VpnErrorCode.STOP_FAILED.messageRes))
             VpnLive.protection.value = null
