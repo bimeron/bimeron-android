@@ -141,6 +141,23 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun delete(id: String, done: () -> Unit) = coordinator.delete(id, done)
     fun clearError() = coordinator.clearError()
 
+    /**
+     * Bind-only SSConf fetch for an explicit refresh. Until the shared SSConf fetch helper is available
+     * in this tree, it fails closed (reported as SSCONF_FETCH_FAILED); wiring it is a one-line change here.
+     */
+    private val ssconfFetch: suspend (String) -> ByteArray = { throw UnsupportedOperationException() }
+    internal val ssconfRefresh = SSConfRefreshCoordinator(
+        scope = viewModelScope,
+        read = { id, stillValid -> store.readForSession(id, stillValid) },
+        commit = { ticket, body -> store.commitSnapshot(ticket, body) },
+        fetch = { source -> ssconfFetch(source) },
+        validate = SSConfSnapshots::validate,
+        needsConsent = { android.net.VpnService.prepare(application) != null },
+        offerApply = coordinator::offerApply,
+    )
+    /** Explicit, user-initiated SSConf snapshot refresh for a stored profile. Never starts or reconnects a VPN. */
+    fun refreshSnapshot(profileId: String): kotlinx.coroutines.Job = ssconfRefresh.refresh(profileId)
+
     fun toggleExpanded() { expanded.value = !expanded.value }
     fun collapse() { expanded.value = false }
     fun setTheme(value: String) = viewModelScope.launch { getApplication<Application>().preferences.edit { it[themeKey] = value } }
@@ -308,6 +325,18 @@ internal class AppModelOperations(
     }
 
     fun clearPendingApply() { pendingApply.value = null; applySession = null }
+
+    /**
+     * Offers the reconnect confirmation when [id] is the active profile of a connected or reconnecting
+     * session. The user applies it through [applyPending]; nothing reconnects here. Main-thread owned.
+     */
+    fun offerApply(id: String): Boolean {
+        val session = runtime.value
+        if (session.state !in setOf("connected", "reconnecting") || session.activeProfileId != id) return false
+        applySession = session
+        pendingApply.value = id
+        return true
+    }
     fun applyPending(start: (String) -> Unit) {
         val id = pendingApply.value ?: return
         val valid = validApply(runtime.value)
@@ -333,10 +362,7 @@ internal class AppModelOperations(
                         warning.value = hasWarning
                         val vpnBusy = runtime.value.state in setOf("permission", "connecting", "connected", "reconnecting", "stopping")
                         if (id == null && !vpnBusy) persistSelection(profile.id)
-                        if (configurationChanged && runtime.value.state in setOf("connected", "reconnecting") && id == runtime.value.activeProfileId) {
-                            applySession = runtime.value
-                            pendingApply.value = id
-                        }
+                        if (configurationChanged && id != null) offerApply(id)
                     } catch (_: Exception) { warning.value = true }
                     runCatching { log(event) }
                     if (editorDraft === draft) runCatching { done() }.onFailure { warning.value = true }

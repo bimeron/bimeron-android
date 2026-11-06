@@ -93,4 +93,18 @@
     <string name="config_unavailable_message">Changes have been saved for the next start. This configuration does not support system VPN; the current connection remains active.</string>
     <string name="switch_proxy_message">Profile “%1$s” runs as a local proxy. The current VPN will be disconnected.</string>
     <string name="select_proxy_action">Disconnect and select</string>
+    <string name="ssconf_refresh_action">Refresh subscription</string>
+    <string name="ssconf_refresh_in_progress">Refreshing subscription…</string>
+    <string name="ssconf_refresh_hint">Downloads the saved SSConf subscription again. The VPN is not started.</string>
+    <string name="ssconf_refresh_save_first">Save or discard your changes to refresh the saved subscription.</string>
+    <string name="ssconf_refresh_done">Subscription refreshed. It is used from the next connection.</string>
+    <string name="ssconf_refresh_not_saved">The subscription was refreshed but not saved. Try again.</string>
+    <string name="ssconf_refresh_profile_changed">The profile changed during the refresh. Try again.</string>
+    <string name="ssconf_refresh_invalid_profile">This profile has no valid SSConf subscription.</string>
+    <string name="ssconf_refresh_consent_required">VPN permission is required to refresh the subscription.</string>
+    <string name="ssconf_refresh_network_unavailable">No network is available to refresh the subscription.</string>
+    <string name="ssconf_refresh_fetch_failed">Could not download the subscription.</string>
+    <string name="ssconf_refresh_snapshot_invalid">The downloaded subscription is invalid. The saved one is kept.</string>
+    <string name="ssconf_refresh_core_incompatible">The VPN core is incompatible. Update the app.</string>
+    <string name="ssconf_refresh_failed">Could not refresh the subscription.</string>
 </resources>
