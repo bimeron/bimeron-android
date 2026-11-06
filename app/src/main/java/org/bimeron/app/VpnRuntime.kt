@@ -594,5 +594,16 @@ internal suspend fun reuseClassifiedInput(input: SessionInput, id: String, token
     return input
 }
 
+/**
+ * The session's input: a recovery start reuses its [classified] read and never calls [read]; a user
+ * start (null [classified]) performs its single [read]. There is no other path to a session input.
+ */
+internal suspend fun sessionInputFor(
+    classified: SessionInput?,
+    id: String,
+    token: Long,
+    read: suspend () -> SessionInput,
+): SessionInput = if (classified != null) reuseClassifiedInput(classified, id, token) else read()
+
 /** The published state of a skipped recovery: a fixed code and message, no profile id or traffic. */
 internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureState(VpnErrorCode.RECOVERY_NEEDS_USER, text)

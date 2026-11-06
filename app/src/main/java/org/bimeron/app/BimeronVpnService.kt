@@ -354,8 +354,9 @@ class BimeronVpnService : VpnService() {
             // Single store-backed read per start; the input owns its bytes, revision, digest and ticket.
             // A recovery start reuses the read it classified and never reads again.
             val sessionInput = try {
-                if (classified != null) reuseClassifiedInput(classified, id, token)
-                else readSessionInput(withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }, id, token)
+                sessionInputFor(classified, id, token) {
+                    readSessionInput(withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }, id, token)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

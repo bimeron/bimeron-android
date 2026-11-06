@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -28,6 +29,7 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class RecoverySkipTest {
+    private companion object { const val TAG = "RecoverySkipTest" }
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val preferences get() = context.getSharedPreferences(BimeronVpnService.RECOVERY, Context.MODE_PRIVATE)
@@ -76,14 +78,23 @@ class RecoverySkipTest {
         assertNull(VpnLive.auth.value)
         assertNull(preferences.getString(BimeronVpnService.ACTIVE_ID, null))
 
+        // On API 33+ the grant above must have taken effect, so the notification checks always run there.
         val notifications = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 33) assertTrue("POST_NOTIFICATIONS grant failed", notifications.areNotificationsEnabled())
         if (notifications.areNotificationsEnabled()) {
-            val posted = notifications.activeNotifications.singleOrNull { it.id == BimeronVpnService.RECOVERY_NOTIFICATION_ID }
+            // NotificationManagerService adds the post asynchronously (later still with an assistant): poll.
+            val postDeadline = SystemClock.elapsedRealtime() + 5_000
+            var posted = notifications.activeNotifications.singleOrNull { it.id == BimeronVpnService.RECOVERY_NOTIFICATION_ID }
+            while (posted == null && SystemClock.elapsedRealtime() < postDeadline) {
+                Thread.sleep(50)
+                posted = notifications.activeNotifications.singleOrNull { it.id == BimeronVpnService.RECOVERY_NOTIFICATION_ID }
+            }
             assertTrue("Recovery notification not posted", posted != null)
             val extras = posted!!.notification.extras
             assertEquals(context.getString(R.string.vpn_recovery_notification_text),
                 extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString())
             assertFalse(extras.toString().contains(profile.id))
+            Log.i(TAG, "notification assertions executed")
         }
     }
 }

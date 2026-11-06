@@ -158,10 +158,33 @@ class RecoveryStartTest {
         val classified = (plan as StartPlan.Proceed).input!!
         // A concurrent edit to an SSH profile lands between classification and session start.
         file.writeText(sshText)
-        val started = reuseClassifiedInput(classified, id.toString(), token)
+        var sessionReads = 0
+        val started = sessionInputFor(classified, id.toString(), token) { sessionReads++; readSessionInput(store, id.toString(), token) }
         assertSame(classified, started)
         assertArrayEquals(classifiedBytes, started.bytes)
+        assertEquals(0, sessionReads)
         assertEquals(1, port.reads)
+    }
+
+    @Test fun sessionInputNeverReadsWhenAClassifiedInputExists() = runBlocking {
+        val id = UUID.randomUUID()
+        val classified = input(ssText, id)
+        var reads = 0
+        val started = sessionInputFor(classified, id.toString(), VpnLive.nextAttempt()) { reads++; input(sshText, id) }
+        assertSame(classified, started)
+        assertEquals(0, reads)
+    }
+
+    @Test fun sessionInputReadsExactlyOnceForAUserStart() = runBlocking {
+        val id = UUID.randomUUID()
+        val read = input(ssText, id)
+        val token = VpnLive.nextAttempt()
+        assertTrue(planStart(false, id.toString(), token, FakePort { _, _ -> throw AssertionError("user start read in planStart") })
+            == StartPlan.Proceed(null))
+        var reads = 0
+        val started = sessionInputFor(null, id.toString(), token) { reads++; read }
+        assertSame(read, started)
+        assertEquals(1, reads)
     }
 
     @Test fun reusedInputFailsClosedWhenStaleOrForAnotherProfile() = runBlocking {
