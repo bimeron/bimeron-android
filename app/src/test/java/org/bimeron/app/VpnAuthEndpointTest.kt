@@ -100,6 +100,21 @@ class VpnAuthEndpointTest {
         assertEquals(AuthResult.STALE, VpnAuthEndpoint.reply(token, SESSION, REQUEST_A, "[]"))
     }
 
+    @Test fun unregisterWithOldTokenWhileNewerIsRegisteredIsNoOp() = runBlocking {
+        val old = attempt()
+        val oldSink = RecordingSink()
+        VpnAuthEndpoint.register(old, oldSink)
+        // The newer attempt registers without the old one ever unregistering.
+        val token = VpnLive.nextAttempt()
+        val sink = RecordingSink()
+        VpnAuthEndpoint.register(token, sink)
+        VpnLive.publishAuth(token, offer(token))
+        VpnAuthEndpoint.unregister(old)
+        assertEquals(AuthResult.ACCEPTED, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
+        assertEquals(listOf("cancel:$REQUEST_A"), sink.calls)
+        assertTrue(oldSink.calls.isEmpty())
+    }
+
     @Test fun coreExceptionIsRejectedWithoutText() = runBlocking {
         val token = attempt()
         val secret = "s3cret-answer"

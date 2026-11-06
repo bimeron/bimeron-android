@@ -126,12 +126,32 @@ object VpnLive {
     }
 
     /**
-     * Publishes or withdraws the auth offer of attempt [token]. A stale token, an offer tagged with
-     * another token, or an offer while the attempt is already terminal has no effect.
+     * A user cancel of attempt [token] ends it with AUTH_CANCELLED. User intent wins over an auth/SSH
+     * failure code a racing status tick already published under the same token (it was derived from
+     * the history before the cancel was recorded). Any other recorded code is kept, as in [publishFailure].
      */
-    internal fun publishAuth(token: Long, offer: AuthOffer?) = gate.commit(token) {
+    internal fun publishUserCancel(message: String, id: String?, token: Long) = gate.commit(token) {
+        val previous = state.value
+        val recorded = previous.attemptProfileId == id && previous.code != null &&
+            (previous.state == "failed" || previous.state == "disconnected")
+        if (!recorded || previous.code in USER_CANCEL_REPLACES) {
+            publish(VpnState("failed", message = message, attemptProfileId = id, code = VpnErrorCode.AUTH_CANCELLED), token)
+        } else if (previous.state != "failed") {
+            publish(previous.copy(state = "failed"), token)
+        }
+    }
+
+    /**
+     * Publishes or withdraws the auth offer of attempt [token]. A stale token, an offer tagged with
+     * another token, an offer while the attempt is already terminal, or an offer for which [stillCurrent]
+     * is false has no effect. [stillCurrent] runs under the gate monitor.
+     *
+     * Lock order: the gate monitor may be held while taking an [AuthAttempt] lock (via [stillCurrent]),
+     * never the reverse; callers must not hold an [AuthAttempt] lock when calling this.
+     */
+    internal fun publishAuth(token: Long, offer: AuthOffer?, stillCurrent: () -> Boolean = { true }) = gate.commit(token) {
         if (offer == null) auth.value = null
-        else if (offer.token == token && state.value.state !in TERMINAL_STATES) auth.value = offer
+        else if (offer.token == token && state.value.state !in TERMINAL_STATES && stillCurrent()) auth.value = offer
     }
 
     /** Starts a new attempt; the previous attempt's offer and auth registration are dropped atomically. */
@@ -168,6 +188,12 @@ object VpnLive {
 }
 
 private val TERMINAL_STATES = setOf("failed", "disconnected", "stopping")
+
+/** Codes a status tick may infer from a stale auth history; a user cancel replaces them (§5.3). */
+private val USER_CANCEL_REPLACES = setOf(
+    VpnErrorCode.SSH_CONNECTION_FAILED, VpnErrorCode.AUTH_FAILED,
+    VpnErrorCode.AUTH_UNANSWERED, VpnErrorCode.AUTH_CANCELLED,
+)
 
 internal fun normalizeCoreState(state: String): String = when (state) {
     "disconnected", "connecting", "connected", "reconnecting", "stopping", "failed" -> state
@@ -335,12 +361,13 @@ internal fun statusTickMillis(connected: Boolean, token: Long): Long = when {
 }
 
 /**
- * A user cancel ends attempt [token] whatever its state (connecting, reconnecting or connected):
- * AUTH_CANCELLED is published under the token and the owning run job is cancelled, which takes the
- * normal finally/Command.Finished path (auth cleared, recovery cleared, no reconnect fallback).
+ * A user cancel ends attempt [token] whatever its state (connecting, reconnecting or connected) and
+ * whether or not Core accepted `cancelAuth`: AUTH_CANCELLED is published under the token (replacing an
+ * auth/SSH code a racing tick published) and the owning run job is cancelled, which takes the normal
+ * finally/Command.Finished path (auth cleared, recovery cleared, no reconnect fallback).
  */
 internal fun stopAfterUserCancel(id: String, token: Long, message: String, owner: kotlinx.coroutines.Job?) {
-    VpnLive.publishFailure(VpnErrorCode.AUTH_CANCELLED, message, id, token)
+    VpnLive.publishUserCancel(message, id, token)
     owner?.cancel()
 }
 
@@ -352,8 +379,10 @@ internal interface CoreSessionPort {
 }
 
 /**
- * Auth state of one attempt token. [poll] runs on the attempt's status coroutine; [deliver] runs on IO
- * from [VpnAuthEndpoint]. Answers pass straight to Core and are never stored.
+ * Auth state of one attempt token. [poll] runs on the attempt's status coroutine (never concurrently with
+ * itself); [deliver] runs on IO from [VpnAuthEndpoint]. Answers pass straight to Core and are never stored.
+ *
+ * [lock] is a leaf lock: nothing else (in particular the gate monitor) is taken while it is held.
  */
 internal class AuthAttempt(
     private val token: Long,
@@ -371,17 +400,22 @@ internal class AuthAttempt(
     fun poll() {
         val wire = try { port.pendingAuth() } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
         val request = try { SshAuthenticationController.parse(wire) } catch (_: Exception) { null }
+        // Decide under the leaf lock; publish after releasing it (the gate monitor is never taken under it).
+        val key = request?.let { it.sessionId to it.requestId }
         synchronized(lock) {
-            val key = request?.let { it.sessionId to it.requestId }
             if (key == offered) return
             offered?.let { if (it !in answered && history != AuthHistory.CANCELLED_BY_USER) history = AuthHistory.WITHDRAWN }
             offered = key
-            if (key == null || wire == null) {
-                VpnLive.publishAuth(token, null)
-                return
-            }
-            if (history != AuthHistory.CANCELLED_BY_USER) history = AuthHistory.OFFERED
-            VpnLive.publishAuth(token, AuthOffer(token, key.first, key.second, wire))
+            if (key != null && wire != null && history != AuthHistory.CANCELLED_BY_USER) history = AuthHistory.OFFERED
+        }
+        if (key == null || wire == null) {
+            VpnLive.publishAuth(token, null)
+            return
+        }
+        // Re-checked under the gate: the offer is still this attempt's current one and the user has not
+        // cancelled since the decision (a cancel also makes the state terminal, which publishAuth checks).
+        VpnLive.publishAuth(token, AuthOffer(token, key.first, key.second, wire)) {
+            synchronized(lock) { offered == key && history != AuthHistory.CANCELLED_BY_USER }
         }
     }
 
@@ -397,12 +431,20 @@ internal class AuthAttempt(
         if (!isOpen()) return false
         val key = sessionId to requestId
         if (answers == null) {
-            port.cancelAuth(sessionId, requestId)
+            // Recorded before Core is called, so a status tick that sees the resulting SSH failure
+            // already derives AUTH_CANCELLED.
             synchronized(lock) {
                 answered.add(key)
                 history = AuthHistory.CANCELLED_BY_USER
             }
-            onCancelled()
+            // The endpoint validated token, registration and offer: the user's cancel stops the attempt
+            // even if Core rejects it (e.g. it already withdrew the request). A Core exception still
+            // propagates, so the endpoint reports REJECTED.
+            try {
+                port.cancelAuth(sessionId, requestId)
+            } finally {
+                onCancelled()
+            }
         } else {
             port.replyAuth(sessionId, requestId, answers)
             synchronized(lock) {

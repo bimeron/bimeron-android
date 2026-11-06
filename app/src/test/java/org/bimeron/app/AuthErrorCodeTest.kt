@@ -47,7 +47,7 @@ class AuthErrorCodeTest {
         assertEquals(AuthResult.STALE, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
     }
 
-    @Test fun everyTerminalPathClearsAuth() {
+    @Test fun terminalPublishesAndGateAdvancesClearAuth() {
         listOf("failed", "disconnected", "stopping").forEach { terminal ->
             val token = withOffer()
             VpnLive.publish(VpnState(terminal, attemptProfileId = PROFILE), token)
@@ -58,7 +58,8 @@ class AuthErrorCodeTest {
             assertEquals("failed", VpnLive.publishCoreStatus(token, PROFILE, "failed", 0, 0, 0, null, VpnErrorCode.AUTH_FAILED))
             assertNull(VpnLive.auth.value)
         }
-        // runSession finally: unregister, then withdraw under the attempt token.
+        // The two calls runSession's finally makes (unregister, then withdraw under the token); the
+        // service code itself is not exercised here.
         withOffer().let { token ->
             VpnAuthEndpoint.unregister(token)
             VpnLive.publishAuth(token, null)

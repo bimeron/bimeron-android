@@ -22,6 +22,8 @@ internal object AuthTestSupport {
 internal class FakeCorePort(var pending: String? = "null") : CoreSessionPort {
     val calls = mutableListOf<String>()
     var failWith: Exception? = null
+    /** Runs inside cancelAuth before Core's result, to interleave a status tick with the cancel. */
+    var duringCancel: () -> Unit = {}
     override fun pendingAuth(): String? = pending
     override fun replyAuth(sessionId: String, requestId: String, answers: String) {
         failWith?.let { throw it }
@@ -29,6 +31,7 @@ internal class FakeCorePort(var pending: String? = "null") : CoreSessionPort {
         pending = "null"
     }
     override fun cancelAuth(sessionId: String, requestId: String) {
+        duringCancel()
         failWith?.let { throw it }
         calls += "cancel:$requestId"
         pending = "null"

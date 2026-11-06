@@ -1,6 +1,10 @@
 package org.bimeron.app
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.bimeron.app.AuthTestSupport.PROFILE
 import org.bimeron.app.AuthTestSupport.REQUEST_A
@@ -146,31 +150,137 @@ class AuthPollingTest {
         assertTrue(port.calls.isEmpty())
     }
 
+    /**
+     * Stands in for runSession: the run job whose cancellation takes the finally path (auth unregistered
+     * and withdrawn) and then sends Command.Finished([token]); [finished] records that send.
+     */
+    private fun CoroutineScope.runJob(token: Long, finished: MutableList<Long>) = launch(Dispatchers.Default) {
+        try {
+            awaitCancellation()
+        } finally {
+            VpnAuthEndpoint.unregister(token)
+            VpnLive.publishAuth(token, null)
+            finished += token
+        }
+    }
+
+    /**
+     * After a user cancel the attempt ends through Command.Finished, which clears recovery and does not
+     * reconnect: Finished is accepted only while the gate still accepts the token, and a teardown that
+     * cleans up and clears recovery keeps the AUTH_CANCELLED failure instead of publishing anything else.
+     */
+    private suspend fun assertStoppedByUser(token: Long, auth: AuthAttempt, owner: Job, finished: List<Long>) {
+        owner.join()
+        assertTrue(owner.isCancelled)
+        assertEquals(listOf(token), finished)
+        assertTrue("Command.Finished for this token is processed", VpnLive.gate.accepts(token))
+        assertNull(teardownFailureCode(cleanupBlocked = false, recoveryCleared = true, prior = VpnLive.state.value.code))
+        assertEquals("failed", VpnLive.state.value.state)
+        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
+        assertNull(VpnLive.auth.value)
+        assertEquals(AuthResult.STALE, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
+        // No reconnect: later Core ticks (reconnecting, connected, SSH failure) cannot leave failed or change the code.
+        auth.poll()
+        assertEquals(AuthHistory.CANCELLED_BY_USER, auth.history)
+        listOf("reconnecting", "connected", "failed").forEach { core ->
+            assertEquals(core, "failed", VpnLive.publishCoreStatus(token, PROFILE, core, 0, 0, 0, null,
+                coreFailureCode(core, "ssh_connection_failed", auth.history)))
+        }
+        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
+    }
+
     private fun cancelStops(state: String) = runBlocking {
         val token = attempt(state)
-        val owner = Job()
+        val finished = mutableListOf<Long>()
+        val owner = runJob(token, finished)
         val port = FakeCorePort(wire(REQUEST_A))
         val auth = authAttempt(token, port) { stopAfterUserCancel(PROFILE, token, "cancelled", owner) }
         VpnAuthEndpoint.register(token, auth)
         auth.poll()
         assertEquals(AuthResult.ACCEPTED, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
         assertEquals(listOf("cancel:$REQUEST_A"), port.calls)
-        assertEquals(AuthHistory.CANCELLED_BY_USER, auth.history)
-        assertEquals("failed", VpnLive.state.value.state)
-        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
-        assertTrue(owner.isCancelled)
-        assertNull(VpnLive.auth.value)
-        // Later polls and a Core SSH failure cannot overwrite the cancel.
-        auth.poll()
-        assertEquals(AuthHistory.CANCELLED_BY_USER, auth.history)
-        assertEquals("failed", VpnLive.publishCoreStatus(token, PROFILE, "failed", 0, 0, 0, null,
-            coreFailureCode("failed", "ssh_connection_failed", auth.history)))
-        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
+        assertStoppedByUser(token, auth, owner, finished)
     }
 
     @Test fun cancelWhileConnectingStops() = cancelStops("connecting")
     @Test fun cancelWhileReconnectingStops() = cancelStops("reconnecting")
     @Test fun cancelWhileConnectedStops() = cancelStops("connected")
+
+    private fun coreRejectedCancelStillStops(state: String) = runBlocking {
+        val token = attempt(state)
+        val finished = mutableListOf<Long>()
+        val owner = runJob(token, finished)
+        // Core already withdrew the request and rejects the cancel.
+        val port = FakeCorePort(wire(REQUEST_A)).apply { failWith = IllegalStateException("no such request") }
+        val auth = authAttempt(token, port) { stopAfterUserCancel(PROFILE, token, "cancelled", owner) }
+        VpnAuthEndpoint.register(token, auth)
+        auth.poll()
+        assertEquals(AuthResult.REJECTED, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
+        assertStoppedByUser(token, auth, owner, finished)
+    }
+
+    @Test fun coreRejectedCancelStopsWhileConnecting() = coreRejectedCancelStillStops("connecting")
+    @Test fun coreRejectedCancelStopsWhileReconnecting() = coreRejectedCancelStillStops("reconnecting")
+    @Test fun coreRejectedCancelStopsWhileConnected() = coreRejectedCancelStillStops("connected")
+
+    @Test fun tickDuringCancelDerivesAuthCancelled() = runBlocking {
+        val token = attempt()
+        val owner = Job()
+        val port = FakeCorePort(wire(REQUEST_A))
+        val auth = authAttempt(token, port) { stopAfterUserCancel(PROFILE, token, "cancelled", owner) }
+        VpnAuthEndpoint.register(token, auth)
+        auth.poll()
+        // The tick reads the history while Core is processing the cancel: it is already recorded.
+        port.duringCancel = {
+            VpnLive.publishCoreStatus(token, PROFILE, "failed", 0, 0, 0, "x",
+                coreFailureCode("failed", "ssh_connection_failed", auth.history))
+        }
+        assertEquals(AuthResult.ACCEPTED, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
+        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
+        assertTrue(owner.isCancelled)
+    }
+
+    @Test fun tickPublishedBeforeCancelRecordedIsOverriddenByCancel() = runBlocking {
+        val token = attempt()
+        val owner = Job()
+        val port = FakeCorePort(wire(REQUEST_A))
+        val auth = authAttempt(token, port) { stopAfterUserCancel(PROFILE, token, "cancelled", owner) }
+        VpnAuthEndpoint.register(token, auth)
+        auth.poll()
+        // The tick read OFFERED just before the cancel started and publishes the SSH failure while the
+        // cancel is in Core.
+        val staleCode = coreFailureCode("failed", "ssh_connection_failed", auth.history)
+        assertEquals(VpnErrorCode.AUTH_UNANSWERED, staleCode)
+        port.duringCancel = {
+            assertEquals("failed", VpnLive.publishCoreStatus(token, PROFILE, "failed", 0, 0, 0, "x", staleCode))
+            assertEquals(VpnErrorCode.AUTH_UNANSWERED, VpnLive.state.value.code)
+        }
+        assertEquals(AuthResult.ACCEPTED, VpnAuthEndpoint.cancel(token, SESSION, REQUEST_A))
+        assertEquals("failed", VpnLive.state.value.state)
+        assertEquals(VpnErrorCode.AUTH_CANCELLED, VpnLive.state.value.code)
+        assertTrue(owner.isCancelled)
+    }
+
+    @Test fun userCancelKeepsNonAuthFailureCode() {
+        val token = attempt()
+        VpnLive.publishFailure(VpnErrorCode.NETWORK_ERROR, "net", PROFILE, token)
+        stopAfterUserCancel(PROFILE, token, "cancelled", null)
+        assertEquals(VpnErrorCode.NETWORK_ERROR, VpnLive.state.value.code)
+    }
+
+    @Test fun replyToEarlierRequestWhileNewerIsOfferedKeepsOffered() = runBlocking {
+        val token = attempt()
+        val port = FakeCorePort(wire(REQUEST_A))
+        val auth = authAttempt(token, port)
+        auth.poll()
+        // B replaces A on a tick after the endpoint validated the reply to A but before it reached the sink.
+        port.pending = wire(REQUEST_B)
+        auth.poll()
+        assertEquals(REQUEST_B, VpnLive.auth.value?.requestId)
+        assertTrue(auth.deliver(SESSION, REQUEST_A, "[\"pw\"]"))
+        assertEquals(AuthHistory.OFFERED, auth.history)
+        assertEquals(VpnErrorCode.AUTH_UNANSWERED, coreFailureCode("failed", "ssh_connection_failed", auth.history))
+    }
 
     @Test fun cancelInReconnectingOverridesReconnectCode() = runBlocking {
         val token = attempt("connected")
