@@ -201,6 +201,8 @@ class ProfileStoreInitializationTest {
         val application = object : android.app.Application() {
             override fun getFilesDir() = blocked
             override fun getApplicationContext(): Context = this
+            // The failed refresh resolves its error text; without resources that NPE leaks into the next runTest.
+            override fun getResources() = ApplicationProvider.getApplicationContext<Context>().resources
         }
         val model = AppModel(application)
         val owner = androidx.lifecycle.ViewModelStore().apply { put("model", model) }
