@@ -2,14 +2,7 @@
     <string name="app_name">Bimeron</string>
     <string name="vpn_notification_channel">VPN Bimeron</string>
     <string name="vpn_notification_text">Подключение активно</string>
-    <string name="invalid_profile">Профиль недоступен</string>
-    <string name="network_error">Ошибка физической сети</string>
-    <string name="no_network">Нет доступной физической сети</string>
-    <string name="tun_error">Не удалось создать VPN-интерфейс</string>
     <string name="core_error">Ядро не смогло установить соединение</string>
-    <string name="vpn_start_error">Не удалось запустить VPN. Проверьте конфигурацию</string>
-    <string name="vpn_stop_error">Ошибка остановки VPN</string>
-    <string name="packet_error">Ошибка передачи пакетов VPN</string>
     <string name="connection">Подключение</string>
     <string name="profiles">Профили</string>
     <string name="settings">Настройки</string>
