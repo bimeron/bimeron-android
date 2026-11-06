@@ -207,8 +207,8 @@ class BimeronVpnService : VpnService() {
                     val recoveryCleared = persistRecovery(null)
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
-                    VpnLive.publish(if (cleanupFailed || !recoveryCleared)
-                        failureState(cleanupOrRecoveryCode(), old.attemptProfileId) else VpnState(), token)
+                    val failure = teardownFailureCode(cleanupFailed, recoveryCleared, old.code)
+                    VpnLive.publish(failure?.let { failureState(it, old.attemptProfileId) } ?: VpnState(), token)
                     leaveForeground(command.startId)
                 }
                 is Command.Finished -> {
@@ -217,8 +217,10 @@ class BimeronVpnService : VpnService() {
                     val recoveryCleared = persistRecovery(null)
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
-                    if (cleanupFailed || !recoveryCleared) {
-                        VpnLive.publish(failureState(cleanupOrRecoveryCode(), VpnLive.state.value.attemptProfileId), command.token)
+                    val current = VpnLive.state.value
+                    val failure = teardownFailureCode(cleanupFailed, recoveryCleared, current.code)
+                    if (failure != null) {
+                        VpnLive.publish(failureState(failure, current.attemptProfileId), command.token)
                     } else if (VpnLive.state.value.state != "failed") VpnLive.publish(VpnState(), command.token)
                     leaveForeground(acceptedStartId)
                 }
@@ -226,14 +228,10 @@ class BimeronVpnService : VpnService() {
         }
     }
 
-    private fun failureState(code: VpnErrorCode, id: String? = null) =
-        VpnState("failed", message = getString(code.messageRes), attemptProfileId = id, code = code)
+    private fun failureState(code: VpnErrorCode, id: String? = null) = failureState(code, { getString(it) }, id)
 
     private fun publishFailure(code: VpnErrorCode, id: String, token: Long) =
         VpnLive.publishFailure(code, getString(code.messageRes), id, token)
-
-    private fun cleanupOrRecoveryCode() =
-        if (cleanupFailed) VpnErrorCode.CLEANUP_BLOCKED else VpnErrorCode.RECOVERY_STATE_FAILED
 
     /** A session failure with a fixed code; carries no exception or Core text. */
     private class SessionFailure(val code: VpnErrorCode) : Exception()

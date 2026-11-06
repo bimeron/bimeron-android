@@ -113,7 +113,9 @@ object VpnLive {
         } else 0
         publish(VpnState(next, if (active) received.coerceAtLeast(0) else 0,
             if (active) sent.coerceAtLeast(0) else 0, message,
-            if (active) id else null, id, started, code), token)
+            if (active) id else null, id, started,
+            // A failure code describes a terminal state only; active states never carry one.
+            code.takeIf { next == "failed" || next == "disconnected" }), token)
         next
     }
 
@@ -165,6 +167,21 @@ internal object NativeCleanupGate {
     @Synchronized fun completed(confirmed: Boolean) {
         if (confirmed) blocked = false
     }
+}
+
+/** Builds a failed state whose message is resolved only from [code]'s string resource. */
+internal fun failureState(code: VpnErrorCode, text: (Int) -> String, id: String? = null) =
+    VpnState("failed", message = text(code.messageRes), attemptProfileId = id, code = code)
+
+/**
+ * Failure code for a Stop/Finished teardown, or null when teardown succeeded.
+ * CLEANUP_BLOCKED always wins: the next start is blocked, so that is the actionable state.
+ * A failed recovery save keeps an existing specific [prior] code instead of overwriting the cause.
+ */
+internal fun teardownFailureCode(cleanupBlocked: Boolean, recoveryCleared: Boolean, prior: VpnErrorCode?): VpnErrorCode? = when {
+    cleanupBlocked -> VpnErrorCode.CLEANUP_BLOCKED
+    !recoveryCleared -> prior ?: VpnErrorCode.RECOVERY_STATE_FAILED
+    else -> null
 }
 
 internal fun coreFailureCode(state: String, lastError: String?): VpnErrorCode? = when {

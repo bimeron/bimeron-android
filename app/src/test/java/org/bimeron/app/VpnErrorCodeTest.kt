@@ -93,6 +93,52 @@ class VpnErrorCodeTest {
         assertNull(coreFailureCode("connected", null))
     }
 
+    @Test fun permissionDeniedCarriesCodeAndCodeMessage() {
+        VpnLive.publish(failureState(VpnErrorCode.PERMISSION_DENIED, { app.getString(it) }), VpnLive.gate.next())
+        val state = VpnLive.state.value
+        assertEquals("failed", state.state)
+        assertEquals(VpnErrorCode.PERMISSION_DENIED, state.code)
+        assertEquals(app.getString(R.string.vpn_error_permission_denied), state.message)
+        assertEquals(journaled(VpnErrorCode.PERMISSION_DENIED), AppEvents.entries.value.first().message)
+    }
+
+    @Test fun activeCoreStatesNeverCarryFailureCode() {
+        val token = VpnLive.gate.next()
+        VpnLive.publishCoreStatus(token, "p", "reconnecting", 0, 0, 0,
+            "reconnecting text", coreFailureCode("reconnecting", null))
+        assertEquals("reconnecting", VpnLive.state.value.state)
+        assertNull(VpnLive.state.value.code)
+        assertEquals("reconnecting text", VpnLive.state.value.message)
+        VpnLive.publishCoreStatus(token, "p", "connected", 0, 0, 10,
+            "stale", coreFailureCode("connected", "old network error"))
+        assertEquals("connected", VpnLive.state.value.state)
+        assertNull(VpnLive.state.value.code)
+        assertFalse(AppEvents.entries.value.any { it.level == LogLevel.ERROR })
+    }
+
+    @Test fun coreDisconnectAfterConnectReportsConnectFailure() {
+        val token = VpnLive.gate.next()
+        VpnLive.publish(VpnState("connecting", attemptProfileId = "p"), token)
+        VpnLive.publishCoreStatus(token, "p", "connected", 1, 2, 10)
+        val code = coreFailureCode("disconnected", null)
+        assertEquals(VpnErrorCode.CORE_CONNECT_FAILED, code)
+        assertEquals("disconnected", VpnLive.publishCoreStatus(token, "p", "disconnected", 0, 0, 20, "lost", code))
+        assertEquals(VpnErrorCode.CORE_CONNECT_FAILED, VpnLive.state.value.code)
+        VpnLive.publishFailure(VpnErrorCode.CORE_CONNECT_FAILED, "generic", "p", token)
+        assertEquals("failed", VpnLive.state.value.state)
+        assertEquals(VpnErrorCode.CORE_CONNECT_FAILED, VpnLive.state.value.code)
+        assertEquals(journaled(VpnErrorCode.CORE_CONNECT_FAILED),
+            AppEvents.entries.value.single { it.level == LogLevel.ERROR }.message)
+    }
+
+    @Test fun teardownKeepsSpecificCauseAndCleanupBlockedWins() {
+        assertNull(teardownFailureCode(cleanupBlocked = false, recoveryCleared = true, prior = VpnErrorCode.PACKET_IO))
+        assertEquals(VpnErrorCode.RECOVERY_STATE_FAILED, teardownFailureCode(false, false, null))
+        assertEquals(VpnErrorCode.PACKET_IO, teardownFailureCode(false, false, VpnErrorCode.PACKET_IO))
+        assertEquals(VpnErrorCode.CLEANUP_BLOCKED, teardownFailureCode(true, false, VpnErrorCode.PACKET_IO))
+        assertEquals(VpnErrorCode.CLEANUP_BLOCKED, teardownFailureCode(true, true, null))
+    }
+
     @Test fun staleAndCancelledAttemptsCannotPassNativeGuard() = runBlocking {
         val stale = VpnLive.gate.next()
         val current = VpnLive.gate.next()
