@@ -51,6 +51,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         deleteProfile = { store.delete(it) },
         saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
         deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
+        checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) },
         readSelection = { application.preferences.data.first()[selectedKey] },
         writeSelection = { id ->
             application.preferences.edit { settings ->
@@ -134,6 +135,8 @@ internal class AppModelOperations(
     private val saveDraft: (suspend (String, String?, Any?) -> Profile)? = null,
     private val saveCommitted: (suspend (String, String?, Any?, suspend (Profile) -> Unit) -> Unit)? = null,
     private val deleteCommitted: (suspend (String, Any?, suspend () -> Unit) -> Unit)? = null,
+    // Cheap delete precondition run before stopping the VPN; the commit itself stays authoritative.
+    private val checkDelete: (String, Any?) -> Unit = { _, _ -> },
     private val journal: (String, LogLevel) -> Unit = { message, _ -> log(message) },
     // Resolves user-visible string resources; the default (resource id) serves plain JVM tests.
     private val strings: (Int, Array<out Any>) -> String = { id, _ -> "#$id" },
@@ -300,9 +303,11 @@ internal class AppModelOperations(
     fun save(text: String, id: String?, event: String, configurationChanged: Boolean = false, done: () -> Unit): kotlinx.coroutines.Job {
         val draft = editorDraft
         val current = stillCurrent(draft)
+        // Creations (imports, added keys) never depend on whatever editor draft happens to be open.
+        val editorBound = id != null && draft != null
         return operation {
             // A queued editor save whose draft was replaced or edited meanwhile is dropped, not committed.
-            if (draft != null && !current()) return@operation
+            if (editorBound && !current()) return@operation
             error.value = null
             try {
                 if (id != null && profiles.value.none { it.id == id }) throw ProfileError(R.string.profile_no_longer_exists)
@@ -322,17 +327,18 @@ internal class AppModelOperations(
                         }
                     } catch (_: Exception) { warning.value = true }
                     runCatching { log(event) }
-                    if (current()) runCatching { done() }.onFailure { warning.value = true }
+                    if (!editorBound || current()) runCatching { done() }.onFailure { warning.value = true }
                 } }
                 if (saveCommitted != null) saveCommitted.invoke(text, id, draft, publish)
                 else publish(saveDraft?.invoke(text, id, draft) ?: saveProfile(text, id))
             } catch (e: ProfileError) {
-                if (draft == null || current()) error.value = e.text(strings)
+                if (!editorBound || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
+                if (e.isEditConflict) reloadAfterConflict()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                if (draft == null || current()) error.value = resource(R.string.profile_save_failed)
+                if (!editorBound || current()) error.value = resource(R.string.profile_save_failed)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
             }
         }
@@ -345,6 +351,7 @@ internal class AppModelOperations(
             if (draft != null && !current()) return@operation
             error.value = null
             try {
+                checkDelete(id, draft)
                 val vpn = runtime.value
                 if (id == vpn.activeProfileId || id == vpn.attemptProfileId) {
                     stop()
@@ -371,6 +378,7 @@ internal class AppModelOperations(
             } catch (e: ProfileError) {
                 if (draft == null || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
+                if (e.isEditConflict) reloadAfterConflict()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -381,6 +389,20 @@ internal class AppModelOperations(
     }
 
     fun clearError() { error.value = null }
+
+    /**
+     * After a conflict the profile changed through another path (possibly another model instance on the
+     * same store), so reload what reopening the editor pins. Never touches the open editor draft.
+     */
+    private suspend fun reloadAfterConflict() = withContext(NonCancellable) {
+        try {
+            val (items, hasWarning) = load()
+            profiles.value = items
+            if (items.none { it.id == pendingSwitch.value }) cancelSwitch()
+            warning.value = hasWarning
+            if (items.none { it.id == selected.value }) persistSelection(items.firstOrNull()?.id)
+        } catch (_: Exception) { warning.value = true }
+    }
 }
 
 internal fun sameModelSession(a: VpnState, b: VpnState): Boolean =
@@ -400,10 +422,12 @@ internal suspend fun publishStoreCommit(store: ProfileStore, requestId: UUID,
  * Updates and deletes need the editor's draft for that id, unchanged since the request, with a base
  * revision; otherwise they conflict. Only creation (id == null) commits with expected == null.
  * A conflict throws [R.string.profile_edit_conflict] and leaves the draft and its imported SSH
- * resources untouched. After a successful save the editor closes; if it stays open (stale result),
+ * resources untouched; AppModelOperations then reloads so that reopening pins the latest revision. After a successful save the editor closes; if it stays open (stale result),
  * its base is not advanced: every commit takes a new store revision, so reusing the old base conflicts.
  * Main-thread owned.
  */
+internal val ProfileError.isEditConflict get() = resId == R.string.profile_edit_conflict
+
 internal class EditorCommits(private val store: () -> ProfileStore) {
     private val publications = ProfileReceiptPublications()
     private val stored = mutableMapOf<String, StoredProfile>()
@@ -417,6 +441,9 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
     fun baseRevision(profile: Profile): ProfileRevision? = stored[profile.id]?.takeIf { it.profile == profile }?.revision
 
     private fun conflict() = ProfileError(R.string.profile_edit_conflict)
+
+    /** Fails early, before the VPN is stopped, when a delete from [draft] would certainly conflict. */
+    fun checkDelete(id: String, draft: EditorDraft?) { base(id, draft, null) }
 
     private fun base(id: String, draft: EditorDraft?, text: String?): ProfileRevision {
         if (draft == null || draft.profile.id != id || (text != null && draft.source.text != text)) throw conflict()

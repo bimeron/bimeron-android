@@ -26,15 +26,29 @@ class EditorDraftRevisionTest {
         val scope = CoroutineScope(parent.coroutineContext + job)
         val resources = SshProfileResources(File(temp.root.canonicalFile, UUID.randomUUID().toString()))
         val store = ProfileStore(null, temp.newFolder(), resources) {}
-        val commits = EditorCommits { store }
+        val runtime = MutableStateFlow(VpnState())
         var loadHook: suspend () -> Unit = {}
         var commitHook: suspend () -> Unit = {}
         var done = 0
-        val model = AppModelOperations(scope,
-            { loadHook(); val (items, warning) = store.load(); commits.loaded(items); items.map { it.profile } to warning },
-            { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, MutableStateFlow(VpnState()), {}, {},
-            saveCommitted = { text, id, draft, publish -> commitHook(); commits.save(text, id, draft as? EditorDraft, publish) },
-            deleteCommitted = { id, draft, publish -> commitHook(); commits.delete(id, draft as? EditorDraft, publish) })
+        var stops = 0
+        /** One AppModel's view of the shared store singleton, like a second window or ViewModel. */
+        inner class Window {
+            val commits = EditorCommits { store }
+            val model = AppModelOperations(scope,
+                { loadHook(); val (items, warning) = store.load(); commits.loaded(items); items.map { it.profile } to warning },
+                { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, runtime, { stops++ }, {},
+                saveCommitted = { text, id, draft, publish -> commitHook(); commits.save(text, id, draft as? EditorDraft, publish) },
+                deleteCommitted = { id, draft, publish -> commitHook(); commits.delete(id, draft as? EditorDraft, publish) },
+                checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) })
+            /** Mirrors AppModel.openEditor. */
+            fun open(id: String): EditorDraft {
+                val profile = model.profiles.value.single { it.id == id }
+                return EditorDraft(profile, commits.baseRevision(profile)).also { model.editorDraft = it }
+            }
+        }
+        val main = Window()
+        val commits = main.commits
+        val model = main.model
 
         suspend fun create(text: String): String {
             val id = UUID.randomUUID()
@@ -42,11 +56,7 @@ class EditorDraftRevisionTest {
             model.refresh().join()
             return id.toString()
         }
-        /** Mirrors AppModel.openEditor. */
-        fun open(id: String): EditorDraft {
-            val profile = model.profiles.value.single { it.id == id }
-            return EditorDraft(profile, commits.baseRevision(profile)).also { model.editorDraft = it }
-        }
+        fun open(id: String) = main.open(id)
         suspend fun stored(id: String) = store.load().first.single { it.id == id }
         /** Another writer changes the profile to [name] and back, ending with identical bytes. */
         suspend fun changeElsewhereAndBack(id: String, name: String) {
@@ -69,6 +79,8 @@ class EditorDraftRevisionTest {
         val draft = open(id)
         assertNotNull(draft.baseRevision)
         changeElsewhereAndBack(id, "B")
+        // The model now knows r3; only the draft's own base can still detect the A->B->A change.
+        model.refresh().join()
         draft.set("Profile", "Name", "Mine")
         save(draft).join()
         assertEquals(0, done)
@@ -82,6 +94,7 @@ class EditorDraftRevisionTest {
         val id = create(ss("A"))
         val draft = open(id)
         changeElsewhereAndBack(id, "B")
+        model.refresh().join()
         model.delete(id) { done++ }.join()
         assertEquals(0, done)
         assertEquals(conflictMessage, model.error.value)
@@ -220,5 +233,61 @@ class EditorDraftRevisionTest {
         val late = resources.stage(SshProfileResources.Kind.KNOWN_HOSTS, "hosts".byteInputStream())
         assertNotNull("draft resources must not be disposed on conflict", draft.resources.accept(late))
         draft.resources.dispose(resources)
+    }
+
+    @Test fun conflictFromAnotherModelReloadsSoReopenedDraftSaves() = scenario {
+        val id = create(ss("A"))
+        val other = Window()
+        other.model.refresh().join()
+        val theirs = other.open(id)
+        theirs.set("Profile", "Name", "Theirs")
+        other.model.save(theirs.source.text, id, "saved") {}.join()
+        assertEquals("Theirs", stored(id).name)
+        // This model never refreshed: it still shows A and pins A's revision.
+        val stale = open(id)
+        assertEquals("A", stale.profile.name)
+        stale.set("Profile", "Name", "Mine")
+        save(stale).join()
+        assertEquals(conflictMessage, model.error.value)
+        assertEquals(0, done)
+        assertSame(stale, model.editorDraft)
+        assertEquals("Mine", stale.document.value("Profile", "Name"))
+        assertEquals("Theirs", model.profiles.value.single { it.id == id }.name)
+        model.editorDraft = null
+        val reopened = open(id)
+        assertEquals("Theirs", reopened.profile.name)
+        reopened.set("Profile", "Name", "Mine")
+        save(reopened).join()
+        assertEquals(1, done)
+        assertNull(model.error.value)
+        assertEquals("Mine", stored(id).name)
+    }
+
+    @Test fun certainDeleteConflictDoesNotStopVpn() = scenario {
+        val id = create(ss("A"))
+        runtime.value = VpnState(state = "connected", activeProfileId = id, connectedAtElapsed = 1)
+        EditorDraft(model.profiles.value.single()).also { model.editorDraft = it }
+        model.delete(id) { done++ }.join()
+        assertEquals(conflictMessage, model.error.value)
+        assertEquals(0, stops)
+        assertEquals(0, done)
+        assertEquals("A", stored(id).name)
+    }
+
+    @Test fun createIsNotDroppedOrSilencedByAnOpenEditor() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        val gate = Gate(); loadHook = { gate.await() }
+        val refresh = model.refresh(); gate.entered.await()
+        val saving = model.save(ss("New"), null, "added") { done++ }
+        draft.set("Profile", "Name", "Edited meanwhile")
+        loadHook = {}
+        gate.release.complete(Unit); refresh.join(); saving.join()
+        assertEquals(1, done)
+        assertTrue(store.load().first.any { it.name == "New" })
+        model.save("not a profile", null, "added") { done++ }.join()
+        draft.set("Profile", "Name", "Edited again")
+        assertNotNull("a failed create reports its error even with an editor open", model.error.value)
+        assertSame(draft, model.editorDraft)
     }
 }
