@@ -37,12 +37,11 @@ class ProfileHoverTest {
                 // Resolved from the current app locale (CI applies "ru"), so the test works in any locale.
                 val expand = waitForText(app.getString(R.string.expand))
                 assertTrue(expand.ancestor { it.isClickable }.performAction(AccessibilityNodeInfo.ACTION_CLICK))
-                Thread.sleep(300)
-                val target = waitForText(profile.name)
-                val row = target.ancestor { node -> node.isCheckable }
-                val rect = Rect().also { row.getBoundsInScreen(it) }
-                val settings = bounds(findDescription(ui.rootInActiveWindow,
-                    app.getString(R.string.configure_profile, profile.name)) ?: error("Missing settings action"))
+                val settingsLabel = app.getString(R.string.configure_profile, profile.name)
+                // The unselected fixture row only exists once the list is expanded; wait for its layout to settle.
+                val geometry = stableRow(profile.name, settingsLabel)
+                val rect = geometry.row
+                val settings = geometry.settings
                 var screen = Rect()
                 var inset = 0
                 scenario.onActivity {
@@ -74,6 +73,8 @@ class ProfileHoverTest {
                 val baseLeft = sample(before, bodyPoint, rect)
                 val baseRight = sample(before, settingsPoint, settings)
 
+                // The baseline and the hover point are only meaningful for the row as measured.
+                assertEquals("Profile row moved after it was measured", geometry, rowGeometry(profile.name, settingsLabel))
                 hover(rect.centerX(), rect.centerY())
                 val deadline = android.os.SystemClock.uptimeMillis() + 5_000
                 var overBody = ui.takeScreenshot()
@@ -95,10 +96,10 @@ class ProfileHoverTest {
                 assertEquals(sample(overBody, settingsPoint, settings), sample(overSettings, settingsPoint, settings))
                 saveScreenshot(app, overSettings, "hover-settings.png")
 
-                val selected = findChecked(ui.rootInActiveWindow) ?: error("No selected profile")
-                val selectedRect = bounds(selected)
-                val selectedSettings = bounds(findDescription(ui.rootInActiveWindow,
-                    app.getString(R.string.configure_profile, selectedProfile.name)) ?: error("Missing selected settings action"))
+                val selectedGeometry = stableRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name))
+                assertTrue("Selection fixture row is not checked", selectedGeometry.checked)
+                val selectedRect = selectedGeometry.row
+                val selectedSettings = selectedGeometry.settings
                 val selectedPoint = android.graphics.Point(selectedRect.left + inset, selectedRect.centerY())
                 val selectedSettingsPoint = android.graphics.Point(selectedSettings.left + selectedSettings.width() / 8, selectedSettings.centerY())
                 val selectedBefore = ui.takeScreenshot()
@@ -124,47 +125,35 @@ class ProfileHoverTest {
 
     private fun bounds(node: AccessibilityNodeInfo) = Rect().also { node.getBoundsInScreen(it) }
 
-    private fun findDescription(node: AccessibilityNodeInfo?, value: String): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.contentDescription?.toString() == value) return node
-        for (i in 0 until node.childCount) findDescription(node.getChild(i), value)?.let { return it }
+    /**
+     * Searches the current tree, refreshing every visited node. UiAutomation's node cache can lag
+     * behind Compose by seconds (observed up to 9 s after expanding the list on an API 34 emulator),
+     * so cached reads may miss new rows or report pre-scroll bounds.
+     */
+    private fun find(node: AccessibilityNodeInfo?, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+        if (node == null || !node.refresh()) return null
+        if (predicate(node)) return node
+        for (i in 0 until node.childCount) find(node.getChild(i), predicate)?.let { return it }
         return null
     }
 
+    private fun root() = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow
+
+    /** Waits without touching the UI: scrolling here would move rows between measurement and hover. */
     private fun waitForText(value: String): AccessibilityNodeInfo {
-        val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
         repeat(200) {
-            val match = findByText(ui.rootInActiveWindow, value)
-            if (match != null) return match
-            if (it % 5 == 4) {
-                findScrollable(ui.rootInActiveWindow)?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                Thread.sleep(300)
-            }
+            find(root()) { it.text?.toString() == value }?.let { return it }
             Thread.sleep(100)
         }
-        error("Element not found: $value; window: ${ui.rootInActiveWindow?.packageName}; text: ${allText(ui.rootInActiveWindow)}")
-    }
-
-    private fun findScrollable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.isScrollable) return node
-        for (i in 0 until node.childCount) findScrollable(node.getChild(i))?.let { return it }
-        return null
+        error("Element not found: $value; window: ${root()?.packageName}; text: ${allText(root())}")
     }
 
     private fun allText(node: AccessibilityNodeInfo?): String {
-        if (node == null) return ""
+        if (node == null || !node.refresh()) return ""
         return buildString {
             node.text?.let { append(it).append(' ') }
             for (i in 0 until node.childCount) append(allText(node.getChild(i)))
         }
-    }
-
-    private fun findByText(node: AccessibilityNodeInfo?, value: String): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.text?.toString() == value) return node
-        for (i in 0 until node.childCount) findByText(node.getChild(i), value)?.let { return it }
-        return null
     }
 
     private fun AccessibilityNodeInfo.ancestor(predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
@@ -173,11 +162,33 @@ class ProfileHoverTest {
         error("Profile row not found")
     }
 
-    private fun findChecked(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.isCheckable && node.isChecked) return node
-        for (i in 0 until node.childCount) findChecked(node.getChild(i))?.let { return it }
-        return null
+    private data class RowGeometry(val row: Rect, val settings: Rect, val checked: Boolean)
+
+    /** One fresh read of a profile row and its settings action, or null while it is not fully laid out. */
+    private fun rowGeometry(name: String, settingsLabel: String): RowGeometry? {
+        val root = root() ?: return null
+        val text = find(root) { it.text?.toString() == name } ?: return null
+        val row = runCatching { text.ancestor { it.isCheckable } }.getOrNull()?.takeIf { it.refresh() } ?: return null
+        val settings = find(root) { it.contentDescription?.toString() == settingsLabel } ?: return null
+        if (!row.isVisibleToUser || !settings.isVisibleToUser) return null
+        val rowBounds = bounds(row)
+        val settingsBounds = bounds(settings)
+        // Both halves of one rendered row share its vertical span; anything else is a mid-layout read.
+        if (rowBounds.isEmpty || settingsBounds.isEmpty || rowBounds.top != settingsBounds.top ||
+            rowBounds.bottom != settingsBounds.bottom || settingsBounds.left < rowBounds.right) return null
+        return RowGeometry(rowBounds, settingsBounds, row.isChecked)
+    }
+
+    /** Waits until two consecutive fresh reads of the row agree, so the layout has settled. */
+    private fun stableRow(name: String, settingsLabel: String): RowGeometry {
+        var previous: RowGeometry? = null
+        repeat(100) {
+            val current = rowGeometry(name, settingsLabel)
+            if (current != null && current == previous) return current
+            previous = current
+            Thread.sleep(100)
+        }
+        error("Profile row did not settle: $name; last=$previous; text: ${allText(root())}")
     }
 
     private fun hover(x: Int, y: Int) {
