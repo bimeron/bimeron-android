@@ -25,7 +25,19 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
 - The foreground VPN service is declared with `stopWithTask=false`, is not
   stopped when the Activity closes and returns `START_STICKY`; the active profile
   ID is stored for Android-permitted recovery. A force stop by the system or the
-  user does not guarantee recovery.
+  user does not guarantee recovery. Every start other than the explicit user
+  start is a recovery: the profile is read once and classified off the main
+  thread, and the session starts that same read. A profile that may need SSH
+  interactive auth (SSH source, `Type = ssh`, any `ssh://` value, also after a
+  leading BOM or Unicode space, an unknown protocol, or an unreadable profile) is
+  skipped instead: no session starts, the recovery ID is cleared, a "Tap to
+  reconnect" notification opens the app, and the state shows
+  `RECOVERY_NEEDS_USER`. Non-SSH profiles recover as before.
+  `RecoverySkipTest` (instrumentation) covers the SSH skip.
+- On Android 13 (API 33) and later the recovery notification is shown only if the
+  user granted the notification permission. The app does not request it at
+  runtime; without it the post is dropped silently and only the in-app state
+  carries `RECOVERY_NEEDS_USER`.
 
 ### Profiles and home screen
 

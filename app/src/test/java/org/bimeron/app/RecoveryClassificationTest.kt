@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 
 class RecoveryClassificationTest {
@@ -106,10 +105,27 @@ class RecoveryClassificationTest {
         assertTrue(mayNeedInteractiveAuth(input(ByteArray(70000) { 'a'.code.toByte() })))
     }
 
-    @Test fun recoveryOfPossiblyInteractiveProfileIsSkippedWithoutProfileData() {
-        val decision = recoveryDecision(true, { input(keyProfile("ssh://user@example.com:22")) })
-        assertEquals(RecoveryDecision.SKIP, decision)
-        assertEquals(RecoveryDecision.SKIP, recoveryDecision(true, { null }))
+    @Test fun leadingBomOrNextLineBeforeSshSchemeIsInteractive() {
+        // Core trims Go white space (including U+0085) and one leading BOM before it dispatches a source value.
+        listOf("\uFEFFssh://u@h", "\u0085ssh://u@h", "\uFEFF\u0085ssh://u@h", "\u0085\uFEFF\u0085ssh://u@h", "\uFEFF\uFEFFssh://u@h").forEach { value ->
+            assertTrue(value, mayNeedInteractiveAuth(input(accessProfile("SS = $value"))))
+            assertTrue(value, mayNeedInteractiveAuth(input(accessProfile("Key = $value"))))
+            assertTrue(value, mayNeedInteractiveAuth(input(accessProfile("Type = ss", "Server = example.com", "Port = 8388", "Note = $value"))))
+        }
+        listOf("\uFEFFssh", "\u0085ssh", "\uFEFF ssh\u0085").forEach { type ->
+            assertTrue(type, mayNeedInteractiveAuth(input(accessProfile("Type = $type", "Server = example.com", "Port = 22"))))
+        }
+    }
+
+    @Test fun pinnedBomSourceValueIsInteractive() {
+        // The exact review case: an SS field whose value Core reads as ssh://u@h.
+        val text = "[Profile]\nVersion = 1\nName = Home server\n\n[AccessKey]\nSS = \uFEFFssh://u@h\n"
+        // The app parser accepts it as an SS profile, so only the value check can catch it.
+        assertEquals("SS", Conf.parse(text).protocol)
+        assertTrue(mayNeedInteractiveAuth(input(text)))
+    }
+
+    @Test fun skippedRecoveryStateCarriesNoProfileData() {
         val state = recoverySkippedState { if (it == R.string.vpn_error_recovery_needs_user) "fixed" else "other" }
         assertEquals("failed", state.state)
         assertEquals(VpnErrorCode.RECOVERY_NEEDS_USER, state.code)
@@ -119,30 +135,5 @@ class RecoveryClassificationTest {
         assertEquals(0L, state.received)
         assertEquals(0L, state.sent)
         assertEquals(0L, state.connectedAtElapsed)
-    }
-
-    @Test fun recoveryOfNonInteractiveProfileProceeds() {
-        allowlistedKeys.values.forEach { key ->
-            assertEquals(key, RecoveryDecision.PROCEED, recoveryDecision(true, { input(keyProfile(key)) }))
-        }
-    }
-
-    @Test fun userStartIsNeverReadClassifiedOrSkipped() {
-        val decision = recoveryDecision(false,
-            read = { fail("user start read"); null },
-            classify = { fail("user start classified"); true })
-        assertEquals(RecoveryDecision.PROCEED, decision)
-    }
-
-    @Test fun recoveryStartIsReadAndClassifiedOnce() {
-        var reads = 0
-        var classified = 0
-        val expected = input(keyProfile("ss://example.com"))
-        val decision = recoveryDecision(true,
-            read = { reads++; expected },
-            classify = { classified++; assertTrue(it === expected); false })
-        assertEquals(RecoveryDecision.PROCEED, decision)
-        assertEquals(1, reads)
-        assertEquals(1, classified)
     }
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Fixed VPN failure taxonomy. User-visible text is derived only from [messageRes];
@@ -483,14 +484,26 @@ internal fun mayNeedInteractiveAuth(input: SessionInput?): Boolean {
         when {
             access.isEmpty() -> true
             access.keys.any { it.equals("SSH", ignoreCase = true) } -> true
-            access.entries.any { it.key.equals("Type", ignoreCase = true) && it.value.trim().equals("ssh", ignoreCase = true) } -> true
-            access.values.any { it.trimStart().startsWith("ssh://", ignoreCase = true) } -> true
+            access.entries.any { it.key.equals("Type", ignoreCase = true) && coreTrim(it.value).equals("ssh", ignoreCase = true) } -> true
+            access.values.any { coreTrim(it).startsWith("ssh://", ignoreCase = true) } -> true
             else -> recoveryProtocol(document, profile) !in NON_INTERACTIVE_PROTOCOLS
         }
     } catch (_: Exception) {
         true
     }
 }
+
+/** Go `unicode.IsSpace`, which `strings.TrimSpace` uses: Unicode White_Space, including U+0085. */
+private fun Char.isGoSpace(): Boolean = this in '\u0009'..'\u000d' || this == ' ' || this == '\u0085' || this == '\u00a0' ||
+    this == '\u1680' || this in '\u2000'..'\u200a' || this == '\u2028' || this == '\u2029' || this == '\u202f' ||
+    this == '\u205f' || this == '\u3000'
+
+/**
+ * A value as Core dispatches it: Core trims Go white space, strips one leading BOM and trims again
+ * (`core: internal/config/config.go:530`). Stripping any run of both is a superset, so a value Core
+ * would treat as `ssh://` is never missed (conservative).
+ */
+private fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
 
 /** Allowlist name of the profile's protocol, or null when it cannot be determined without doubt. */
 private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String? {
@@ -506,21 +519,79 @@ private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String
     }
 }
 
-internal enum class RecoveryDecision { PROCEED, SKIP }
+/**
+ * Service effects of a start, behind a seam so the recovery wiring is testable on the JVM (§6, §13.1).
+ * The service implements it with the store, its preferences, the notification manager and the journal.
+ */
+internal interface RecoveryStartPort {
+    /** The single store-backed read of [id] under [token]; any failure is null. A real cancellation propagates. */
+    suspend fun read(id: String, token: Long): SessionInput?
+    /** Clears the persisted recovery id; false when it could not be saved. */
+    suspend fun clearRecovery(): Boolean
+    val destroyed: Boolean
+    fun postNotification()
+    fun cancelNotification()
+    fun recordSkip()
+    fun publishSkipped(token: Long)
+}
+
+internal sealed interface StartPlan {
+    /** Start the session. [input] is the classified recovery read, reused by the session; null for a user start. */
+    data class Proceed(val input: SessionInput?) : StartPlan
+    /** A possibly interactive recovery was skipped and its effects were applied; leave the foreground. */
+    data object Skipped : StartPlan
+    /** Another attempt took the gate while the profile was read; it owns the state, so leave silently. */
+    data object Superseded : StartPlan
+    /** The service was destroyed meanwhile; stop consuming commands. */
+    data object Destroyed : StartPlan
+}
+
+/** Called for every accepted start: a user start retires a pending "Tap to reconnect" notification. */
+internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {
+    if (!recovery) port.cancelNotification()
+}
 
 /**
- * Decides a start. Only a recovery start (sticky restart) is classified, and it proceeds only when
- * the profile is positively non-interactive: recovery never shows UI, so a possible auth prompt
- * skips the start instead (§6, §11.14). [read] is not called for a user start.
+ * Plans a start. A user start is never read or classified here. A recovery start (anything but the
+ * explicit user START) reads the profile once, classifies that read off Main on [classifier], and
+ * proceeds only when the profile is positively non-interactive: recovery never shows UI, so a possible
+ * auth prompt skips the start instead (§6, §11.14). The proceeding plan carries the classified input,
+ * so the session starts exactly what was classified.
  */
-internal inline fun recoveryDecision(
+internal suspend fun planStart(
     recovery: Boolean,
-    read: () -> SessionInput?,
+    id: String,
+    token: Long,
+    port: RecoveryStartPort,
     classify: (SessionInput?) -> Boolean = ::mayNeedInteractiveAuth,
-): RecoveryDecision = when {
-    !recovery -> RecoveryDecision.PROCEED
-    classify(read()) -> RecoveryDecision.SKIP
-    else -> RecoveryDecision.PROCEED
+    classifier: CoroutineContext = Dispatchers.Default,
+): StartPlan {
+    if (!recovery) return StartPlan.Proceed(null)
+    val input = port.read(id, token)
+    val interactive = withContext(classifier) { classify(input) }
+    currentCoroutineContext().ensureActive()
+    if (port.destroyed) return StartPlan.Destroyed
+    if (!VpnLive.gate.accepts(token)) return StartPlan.Superseded
+    if (!interactive && input != null) return StartPlan.Proceed(input)
+    port.clearRecovery()
+    currentCoroutineContext().ensureActive()
+    if (port.destroyed) return StartPlan.Destroyed
+    port.postNotification()
+    port.recordSkip()
+    port.publishSkipped(token)
+    return StartPlan.Skipped
+}
+
+/**
+ * Reuses a classified recovery read instead of reading again, so a concurrent edit cannot slip between
+ * classification and start. Fails closed: a stale attempt or a stale ticket is a cancellation, and an
+ * input for another profile is rejected; it never falls back to an unclassified read.
+ */
+internal suspend fun reuseClassifiedInput(input: SessionInput, id: String, token: Long): SessionInput {
+    ensureSessionAttempt(token)
+    if (input.ticket?.stillValid?.invoke() == false) throw CancellationException("Stale recovery input")
+    require(input.id.toString() == id) { "Classified input is for another profile" }
+    return input
 }
 
 /** The published state of a skipped recovery: a fixed code and message, no profile id or traffic. */
