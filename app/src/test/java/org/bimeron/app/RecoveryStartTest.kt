@@ -133,16 +133,27 @@ class RecoveryStartTest {
 
     @Test fun classificationRunsOffTheCallingThread() = runBlocking {
         val caller = Thread.currentThread()
-        var classifierThread: Thread? = null
         val port = FakePort { _, _ -> input(ssText) }
-        planStart(true, "id", VpnLive.nextAttempt(), port, classify = { classifierThread = Thread.currentThread(); false })
-        assertNotEquals(caller, classifierThread)
-        assertTrue(classifierThread!!.name, classifierThread!!.name.startsWith("DefaultDispatcher"))
-        Executors.newSingleThreadExecutor { Thread(it, "classifier-test") }.asCoroutineDispatcher().use { dispatcher ->
-            planStart(true, "id", VpnLive.nextAttempt(), port, classify = { classifierThread = Thread.currentThread(); false },
-                classifier = dispatcher)
+        val defaultThreads = mutableListOf<Thread>()
+        val defaultPlan = planStart(true, "id", VpnLive.nextAttempt(), port,
+            classify = { defaultThreads += Thread.currentThread(); false })
+        assertTrue(defaultPlan.toString(), defaultPlan is StartPlan.Proceed)
+        val defaultThread = defaultThreads.single()
+        assertNotEquals(caller, defaultThread)
+        assertTrue(defaultThread.name, defaultThread.name.startsWith("DefaultDispatcher"))
+        // Compare the injected classifier thread by identity, not by name: in coroutines debug mode (on
+        // whenever -ea is, as in Gradle tests) a running coroutine renames its thread "<name> @coroutine#N"
+        // and restores the name only after resuming the caller, so reading Thread.name here would race.
+        val executorThreads = mutableListOf<Thread>()
+        val customThreads = mutableListOf<Thread>()
+        val customPlan = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "classifier-test").also { synchronized(executorThreads) { executorThreads += it } }
+        }.asCoroutineDispatcher().use { dispatcher ->
+            planStart(true, "id", VpnLive.nextAttempt(), port,
+                classify = { customThreads += Thread.currentThread(); false }, classifier = dispatcher)
         }
-        assertEquals("classifier-test", classifierThread!!.name)
+        assertTrue(customPlan.toString(), customPlan is StartPlan.Proceed)
+        assertSame(synchronized(executorThreads) { executorThreads.single() }, customThreads.single())
     }
 
     @Test fun recoveryStartReadsOnceAndSessionStartsTheClassifiedBytes() = runBlocking {
