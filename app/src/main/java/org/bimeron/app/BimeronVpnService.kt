@@ -44,10 +44,14 @@ class BimeronVpnService : VpnService() {
         const val FORCE_RESTART = "force_restart"
         private const val RECOVERY = "vpn_recovery"
         private const val ACTIVE_ID = "active_id"
+        private const val VPN_NOTIFICATION_ID = 1
+        private const val RECOVERY_CHANNEL = "vpn_recovery"
+        private const val RECOVERY_NOTIFICATION_ID = 2
     }
 
     private sealed interface Command {
-        data class Start(val id: String, val startId: Int, val force: Boolean) : Command
+        /** [recovery] marks a system restart (sticky null intent); it is classified before it may start (§6). */
+        data class Start(val id: String, val startId: Int, val force: Boolean, val recovery: Boolean) : Command
         data class Stop(val startId: Int) : Command
         data class Invalid(val startId: Int, val reportError: Boolean) : Command
         data class Finished(val token: Long) : Command
@@ -111,8 +115,12 @@ class BimeronVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         JournalRuntime.start(applicationContext)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
+        val notifications = getSystemService(NotificationManager::class.java)
+        notifications.createNotificationChannel(
             NotificationChannel("vpn", getString(R.string.vpn_notification_channel), NotificationManager.IMPORTANCE_LOW)
+        )
+        notifications.createNotificationChannel(
+            NotificationChannel(RECOVERY_CHANNEL, getString(R.string.vpn_recovery_notification_channel), NotificationManager.IMPORTANCE_DEFAULT)
         )
         scope.launch(Dispatchers.Main.immediate) { consumeCommands() }
     }
@@ -136,13 +144,17 @@ class BimeronVpnService : VpnService() {
             return START_NOT_STICKY
         }
         ensureForeground()
-        commands.trySend(Command.Start(id, startId, intent?.getBooleanExtra(FORCE_RESTART, false) == true))
+        // Only a sticky restart (null intent) is a recovery. VpnService.SERVICE_INTERFACE (always-on) is not
+        // handled above and ends as Command.Invalid. A skipped recovery clears the recovery id and stops the
+        // service, so it is not restarted; START_STICKY is kept for starts that proceed.
+        val recovery = intent == null
+        commands.trySend(Command.Start(id, startId, intent?.getBooleanExtra(FORCE_RESTART, false) == true, recovery))
         return START_STICKY
     }
 
     private fun ensureForeground() {
         if (!foreground) {
-            startForeground(1, notification())
+            startForeground(VPN_NOTIFICATION_ID, notification())
             foreground = true
         }
     }
@@ -156,6 +168,36 @@ class BimeronVpnService : VpnService() {
             .setContentIntent(open)
             .setOngoing(true)
             .build()
+    }
+
+    /** Fixed text only: no profile name, id or server. Tapping opens the app; nothing starts by itself. */
+    private fun postRecoveryNotification() {
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val notification = NotificationCompat.Builder(this, RECOVERY_CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_bimeron)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.vpn_recovery_notification_text))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        // Without notification permission the post is dropped; the published state still carries the code.
+        runCatching { getSystemService(NotificationManager::class.java).notify(RECOVERY_NOTIFICATION_ID, notification) }
+    }
+
+    private fun cancelRecoveryNotification() {
+        runCatching { getSystemService(NotificationManager::class.java).cancel(RECOVERY_NOTIFICATION_ID) }
+    }
+
+    /** Store-backed read for classification; any failure is an absent input, so the start is skipped. */
+    private suspend fun readRecoveryInput(id: String, token: Long): SessionInput? = try {
+        val store = withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }
+        readSessionInput(store, id, token)
+    } catch (e: CancellationException) {
+        // A real cancellation propagates; a superseded token is checked by the caller.
+        currentCoroutineContext().ensureActive()
+        null
+    } catch (_: Exception) {
+        null
     }
 
     private suspend fun consumeCommands() {
@@ -173,6 +215,7 @@ class BimeronVpnService : VpnService() {
                 }
                 is Command.Start -> {
                     acceptedStartId = command.startId
+                    if (!command.recovery) cancelRecoveryNotification()
                     val current = VpnLive.state.value
                     if (!command.force && runJob?.isActive == true && command.id == (current.activeProfileId ?: current.attemptProfileId)) continue
                     // A new token cannot clear the old offer, so it is cleared with the gate advance.
@@ -187,6 +230,27 @@ class BimeronVpnService : VpnService() {
                         continue
                     }
                     ensureForeground()
+                    val decision = recoveryDecision(command.recovery, { readRecoveryInput(command.id, token) })
+                    if (command.recovery) {
+                        currentCoroutineContext().ensureActive()
+                        if (destroyed) return
+                        // The app started another attempt while the profile was read; that attempt owns the state.
+                        if (!VpnLive.gate.accepts(token)) {
+                            leaveForeground(command.startId)
+                            continue
+                        }
+                    }
+                    if (decision == RecoveryDecision.SKIP) {
+                        // Recovery never shows UI: a possibly interactive profile waits for the user (§6, §11.14).
+                        persistRecovery(null)
+                        currentCoroutineContext().ensureActive()
+                        if (destroyed) return
+                        postRecoveryNotification()
+                        AppEvents.add(R.string.journal_recovery_needs_user, LogLevel.WARNING)
+                        VpnLive.publish(recoverySkippedState { getString(it) }, token)
+                        leaveForeground(command.startId)
+                        continue
+                    }
                     if (!persistRecovery(command.id)) {
                         VpnLive.publish(failureState(VpnErrorCode.RECOVERY_STATE_FAILED, command.id), token)
                         leaveForeground(command.startId)

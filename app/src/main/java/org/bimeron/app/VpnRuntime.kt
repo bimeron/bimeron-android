@@ -456,3 +456,72 @@ internal class AuthAttempt(
         return true
     }
 }
+
+/** Protocols Core starts without any SSH handshake, named as `[AccessKey]` source keys (§6). */
+internal val NON_INTERACTIVE_PROTOCOLS = setOf(
+    "SS", "SSConf", "SOCKS5", "HTTP", "MASQUE", "VLESS", "VMess", "Trojan", "Naive", "Hysteria2", "AnyTLS", "TUIC",
+)
+
+/** Allowlist name of each structured `Type =` form; SSH and unknown types have none. */
+private val NON_INTERACTIVE_FORMS: Map<ProtocolFormDescriptor, String> = mapOf(
+    ShadowsocksForm to "SS", Socks5Form to "SOCKS5", VlessProtocolForm to "VLESS", HttpConnectForm to "HTTP",
+    NaiveH2Form to "Naive", MasqueForm to "MASQUE", TrojanProtocolForm to "Trojan",
+)
+
+/**
+ * Conservative: true unless the profile is positively known to be non-interactive (§6).
+ * Core installs the SSH prompt for every SSH profile, so any SSH marker, any unknown protocol
+ * and any input that does not parse cleanly counts as possibly interactive.
+ */
+internal fun mayNeedInteractiveAuth(input: SessionInput?): Boolean {
+    if (input == null) return true
+    return try {
+        val text = Conf.read(input.bytes)
+        val profile = Conf.parse(text)
+        val document = ConfigDocument.parse(text)
+        val access = document.values("AccessKey")
+        when {
+            access.isEmpty() -> true
+            access.keys.any { it.equals("SSH", ignoreCase = true) } -> true
+            access.entries.any { it.key.equals("Type", ignoreCase = true) && it.value.trim().equals("ssh", ignoreCase = true) } -> true
+            access.values.any { it.trimStart().startsWith("ssh://", ignoreCase = true) } -> true
+            else -> recoveryProtocol(document, profile) !in NON_INTERACTIVE_PROTOCOLS
+        }
+    } catch (_: Exception) {
+        true
+    }
+}
+
+/** Allowlist name of the profile's protocol, or null when it cannot be determined without doubt. */
+private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String? {
+    val source = document.source() ?: return NON_INTERACTIVE_FORMS[ProtocolForms.descriptor(document)]
+    // Both parsers must agree on the single source key.
+    if (source.first != profile.protocol) return null
+    return when (source.first) {
+        // A generic key resolves to its scheme's source field; an unsupported scheme throws.
+        "Key" -> Conf.keyField(source.second)
+        // An external file is not part of the session input.
+        "File" -> null
+        else -> source.first
+    }
+}
+
+internal enum class RecoveryDecision { PROCEED, SKIP }
+
+/**
+ * Decides a start. Only a recovery start (sticky restart) is classified, and it proceeds only when
+ * the profile is positively non-interactive: recovery never shows UI, so a possible auth prompt
+ * skips the start instead (§6, §11.14). [read] is not called for a user start.
+ */
+internal inline fun recoveryDecision(
+    recovery: Boolean,
+    read: () -> SessionInput?,
+    classify: (SessionInput?) -> Boolean = ::mayNeedInteractiveAuth,
+): RecoveryDecision = when {
+    !recovery -> RecoveryDecision.PROCEED
+    classify(read()) -> RecoveryDecision.SKIP
+    else -> RecoveryDecision.PROCEED
+}
+
+/** The published state of a skipped recovery: a fixed code and message, no profile id or traffic. */
+internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureState(VpnErrorCode.RECOVERY_NEEDS_USER, text)
