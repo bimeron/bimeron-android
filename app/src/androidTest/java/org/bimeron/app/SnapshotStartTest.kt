@@ -5,7 +5,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -55,14 +57,18 @@ class SnapshotStartTest {
     private fun attempt(fetch: suspend (String) -> ByteArray): Pair<org.bimeron.core.androidcore.SSConfSnapshot, Int> =
         runBlocking(Dispatchers.Default) {
             val token = VpnLive.gate.next()
-            var maxObservers = SSConfNetworkLease.observerCount
-            val sampler = launch { while (true) { maxObservers = maxOf(maxObservers, SSConfNetworkLease.observerCount); delay(5) } }
-            try {
-                val input = readSessionInput(store, id.toString(), token)
-                loadSessionSnapshot(store, input, token, fetch) to maxObservers
-            } finally {
-                sampler.cancel()
+            val maxObservers = AtomicInteger(SSConfNetworkLease.observerCount)
+            val sampler = launch {
+                while (true) { maxObservers.accumulateAndGet(SSConfNetworkLease.observerCount) { a, b -> maxOf(a, b) }; delay(5) }
             }
+            val snapshot = try {
+                val input = readSessionInput(store, id.toString(), token)
+                loadSessionSnapshot(store, input, token, fetch)
+            } finally {
+                sampler.cancelAndJoin()
+            }
+            maxObservers.accumulateAndGet(SSConfNetworkLease.observerCount) { a, b -> maxOf(a, b) }
+            snapshot to maxObservers.get()
         }
 
     @Test fun fixtureBodiesAreAcceptedByCore() {

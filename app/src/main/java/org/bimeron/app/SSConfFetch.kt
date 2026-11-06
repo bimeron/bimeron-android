@@ -50,7 +50,8 @@ internal typealias SSConfLeaseScope = suspend (block: (SSConfFetchLease) -> Byte
  * the caller validates it through Core before use.
  *
  * Failures map only to [VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE] or [VpnErrorCode.SSCONF_FETCH_FAILED].
- * Coroutine cancellation is rethrown as is.
+ * Coroutine cancellation is rethrown as is. Native load Errors ([LinkageError]) are not mapped and
+ * propagate out of [fetchSSConf]; [resolveSessionSnapshot] maps them to [VpnErrorCode.CORE_INCOMPATIBLE].
  */
 internal suspend fun fetchSSConf(context: Context, source: String): ByteArray = fetchSSConf(
     source,
@@ -148,25 +149,10 @@ private fun SSConfFetchLease.protector() = object : SSConfSocketProtector {
  *
  * This step runs before the capability check, so a native load failure from [validate] or [fetch]
  * (see [isNativeLoadFailure]) fails with [VpnErrorCode.CORE_INCOMPATIBLE] instead of escaping as an
- * [Error]. Other errors propagate.
+ * [Error]. The mapping covers only those two Core calls: any [Error] from [ensureAttempt], [discard]
+ * or [commit], and every other error, propagates.
  */
 internal suspend fun <T> resolveSessionSnapshot(
-    ticket: SnapshotTicket,
-    stored: StoredSnapshot?,
-    ensureAttempt: suspend () -> Unit,
-    validate: suspend (ByteArray) -> T,
-    fetch: suspend () -> ByteArray,
-    discard: suspend (SnapshotTicket, Sha256) -> Unit,
-    commit: suspend (SnapshotTicket, ByteArray) -> SnapshotCommitResult,
-    warn: (String) -> Unit,
-): T = try {
-    resolveSnapshotSteps(ticket, stored, ensureAttempt, validate, fetch, discard, commit, warn)
-} catch (error: LinkageError) {
-    if (isNativeLoadFailure(error)) throw SSConfFailure(VpnErrorCode.CORE_INCOMPATIBLE)
-    throw error
-}
-
-private suspend fun <T> resolveSnapshotSteps(
     ticket: SnapshotTicket,
     stored: StoredSnapshot?,
     ensureAttempt: suspend () -> Unit,
@@ -184,7 +170,7 @@ private suspend fun <T> resolveSnapshotSteps(
         discard(ticket, stored.digest)
         ensureAttempt()
     }
-    val body = fetch()
+    val body = coreCall(fetch)
     ensureAttempt()
     if (body.size !in 1..SSConfSnapshots.MAX_BODY) throw SSConfFailure(VpnErrorCode.SSCONF_SNAPSHOT_INVALID)
     val fetched = validateOrNull(validate, body)
@@ -199,12 +185,23 @@ private suspend fun <T> resolveSnapshotSteps(
     }
 }
 
-private suspend fun <T> validateOrNull(validate: suspend (ByteArray) -> T, body: ByteArray): T? = try {
-    validate(body)
-} catch (cancelled: CancellationException) {
-    throw cancelled
-} catch (_: Exception) {
-    null
+/** Runs one Core call, mapping a native load failure to [VpnErrorCode.CORE_INCOMPATIBLE]. */
+private suspend fun <R> coreCall(call: suspend () -> R): R = try {
+    call()
+} catch (error: LinkageError) {
+    if (isNativeLoadFailure(error)) throw SSConfFailure(VpnErrorCode.CORE_INCOMPATIBLE)
+    throw error
+}
+
+/** A body Core rejects with an [Exception] is null; a native load failure is still mapped by [coreCall]. */
+private suspend fun <T> validateOrNull(validate: suspend (ByteArray) -> T, body: ByteArray): T? = coreCall {
+    try {
+        validate(body)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
+    }
 }
 
 /**

@@ -6,7 +6,9 @@ It performs one bounded request with no retry (5 s bind, 5 s capture, 15 s Core
 resolve), must be called off Main, and maps failures only to the fixed codes
 `SSCONF_NETWORK_UNAVAILABLE` (acquisition failure, or request creation or resolve
 failing after lease invalidation) and `SSCONF_FETCH_FAILED` (any other request/resolve
-error). Cancellation of the caller wins over any failure, and the invalidation
+error). Native load Errors (`LinkageError`) are not mapped and propagate out of
+`fetchSSConf`; `resolveSessionSnapshot` maps them to `CORE_INCOMPATIBLE` (below).
+Cancellation of the caller wins over any failure, and the invalidation
 registration is closed on every path. Source, body and lease diagnostics never enter
 exception messages, `VpnState` or the journal. An internal overload takes the lease
 scope and request factory as seams (JVM tests: `SSConfFetchMappingTest`).
@@ -23,9 +25,10 @@ happens before the native cleanup gate, capability check and TUN; the session is
 created with `Androidcore.newSessionWithSSConfSnapshot`. The decision logic is
 `resolveSessionSnapshot` (JVM tests: `SSConfSessionSnapshotTest`); the creation order is
 `createCoreSession` (JVM tests: `CoreSessionOrderTest`). Because this step precedes the
-capability check, a native load failure during it (`UnsatisfiedLinkError`,
-`NoSuchMethodError`, or `NoClassDefFoundError` caused by a failed native load) fails
-the attempt with `CORE_INCOMPATIBLE`, like `CoreCapabilities`. A commit conflict seen
+capability check, a native load failure from Core validation or the fetch
+(`UnsatisfiedLinkError`, `NoSuchMethodError`, or `NoClassDefFoundError` caused by a
+failed native load) fails the attempt with `CORE_INCOMPATIBLE`, like `CoreCapabilities`.
+A `LinkageError` from the store (discard or commit) propagates. A commit conflict seen
 by an attempt that is already stale is cancellation, not `PROFILE_CHANGED`.
 Instrumentation: `SSConfFetchTest` (real fetch failure paths, observer count back at 0,
 state and token unchanged) and `SnapshotStartTest` (the service's snapshot step with a

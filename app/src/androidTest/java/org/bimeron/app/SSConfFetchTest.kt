@@ -3,8 +3,11 @@ package org.bimeron.app
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -29,7 +32,7 @@ class SSConfFetchTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     /** Loopback discard port: no listener, so the bounded request fails without leaving the device. */
     private val refused = "ssconf://127.0.0.1:9/bimeron-fetch-test-secret"
-    /** TEST-NET-1 (RFC 5737): unroutable, so the request stays in flight until cancelled. */
+    /** TEST-NET-1 (RFC 5737): never contacted, because the fetch is cancelled during lease acquisition. */
     private val blackhole = "ssconf://192.0.2.1:443/bimeron-fetch-test-secret"
 
     /** Runs [block] and asserts it leaves VPN state, protection, the attempt token and the journal untouched. */
@@ -72,20 +75,30 @@ class SSConfFetchTest {
         }
     }
 
-    @Test fun cancelledFetchReleasesObserver() = SSConfConsentFixture.withConsent(context, true) {
+    /**
+     * Cancels while the lease is still being acquired (observer registered, network snapshot settling),
+     * so no request is created. Requires a physical network; only cancellation is an accepted outcome.
+     */
+    @Test fun cancelDuringAcquisitionReleasesObserver() = SSConfConsentFixture.withConsent(context, true) {
         preservingGlobals {
-            var outcome: Throwable? = null
+            val outcome = AtomicReference<Throwable?>()
             val worker = launch {
                 try { fetchSSConf(context, blackhole); fail("Unexpected SSConf body") }
-                catch (t: Throwable) { outcome = t; throw t }
+                catch (t: Throwable) { outcome.set(t); throw t }
             }
-            // Cancel while the lease is held when a network is available; otherwise cancel whatever remains.
-            withTimeoutOrNull(5_000) { while (SSConfNetworkLease.observerCount == 0 && worker.isActive) delay(10) }
+            // Bounded wait for the condition; a worker that finishes first fails the test below.
+            val registered = withTimeoutOrNull(5_000) {
+                while (SSConfNetworkLease.observerCount == 0) {
+                    if (!worker.isActive) return@withTimeoutOrNull false
+                    delay(1)
+                }
+                true
+            }
             worker.cancelAndJoin()
-            val result = outcome
-            assertTrue("Cancellation must win: $result", result == null ||
-                result is kotlinx.coroutines.CancellationException ||
-                (result is SSConfFailure && result.code == VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE))
+            val result = outcome.get()
+            assertEquals("Observer must be registered before cancellation (outcome: $result)", true, registered)
+            assertTrue("Cancellation must win: $result", result is CancellationException)
+            assertFalse("Must not be a timeout: $result", result is TimeoutCancellationException)
         }
     }
 }

@@ -240,6 +240,36 @@ class SSConfSessionSnapshotTest {
         }
     }
 
+    @Test fun storeLinkageErrorsAreNotMappedToCoreIncompatible() = runBlocking {
+        val fromCommit = NoSuchMethodError("commitSnapshot")
+        try {
+            resolveSessionSnapshot(ticket(), null, {}, { String(it) }, fetch = { good },
+                discard = { _, _ -> }, commit = { _, _ -> throw fromCommit }, warn = {})
+            fail("Expected $fromCommit")
+        } catch (e: LinkageError) {
+            assertTrue(e === fromCommit)
+        }
+        val fromDiscard = NoSuchMethodError("discardSnapshot")
+        try {
+            resolveSessionSnapshot(ticket(), stored(rejected), {},
+                { body -> if (body.contentEquals(rejected)) throw IllegalStateException("rejected") else String(body) },
+                fetch = { good }, discard = { _, _ -> throw fromDiscard },
+                commit = { _, _ -> SnapshotCommitResult.NotPersisted }, warn = {})
+            fail("Expected $fromDiscard")
+        } catch (e: LinkageError) {
+            assertTrue(e === fromDiscard)
+        }
+    }
+
+    @Test fun nativeLoadFailureDuringFetchIsCoreIncompatible() = runBlocking {
+        var committed = false
+        expectFailure(VpnErrorCode.CORE_INCOMPATIBLE) {
+            resolveSessionSnapshot(ticket(), null, {}, { String(it) }, fetch = { throw UnsatisfiedLinkError("gojni") },
+                discard = { _, _ -> }, commit = { _, _ -> committed = true; SnapshotCommitResult.NotPersisted }, warn = {})
+        }
+        assertFalse(committed)
+    }
+
     @Test fun unpreparedFetchMapsToNetworkUnavailableWithoutSource() = runBlocking {
         ShadowVpnService.setPrepareResult(Intent("consent"))
         val failure = expectFailure(VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE) { fetchSSConf(app, source) }
