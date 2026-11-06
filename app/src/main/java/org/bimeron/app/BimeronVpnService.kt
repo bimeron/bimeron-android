@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -48,6 +49,14 @@ class BimeronVpnService : VpnService() {
         private const val VPN_NOTIFICATION_ID = 1
         private const val RECOVERY_CHANNEL = "vpn_recovery"
         internal const val RECOVERY_NOTIFICATION_ID = 2
+
+        /**
+         * Notification tap target. SINGLE_TOP + CLEAR_TOP bring the running MainActivity forward (onNewIntent)
+         * instead of stacking a second instance with its own auth dialog; nothing reads extras from it.
+         */
+        internal fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     private sealed interface Command {
@@ -162,7 +171,7 @@ class BimeronVpnService : VpnService() {
     }
 
     private fun notification(): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = openAppIntent(this)
         return NotificationCompat.Builder(this, "vpn")
             .setSmallIcon(R.drawable.ic_stat_bimeron)
             .setContentTitle(getString(R.string.app_name))
@@ -174,7 +183,7 @@ class BimeronVpnService : VpnService() {
 
     /** Fixed text only: no profile name, id or server. Tapping opens the app; nothing starts by itself. */
     private fun postRecoveryNotification() {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = openAppIntent(this)
         val notification = NotificationCompat.Builder(this, RECOVERY_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_bimeron)
             .setContentTitle(getString(R.string.app_name))
