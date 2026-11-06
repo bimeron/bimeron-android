@@ -22,21 +22,26 @@ import androidx.compose.ui.window.DialogProperties
 /** Host serializes feed/reply/cancel on Main and invalidates on stop.
  * Create one controller per SSH session; never reuse across sessions or recreation. At most eight requests
  * are admitted; retired IDs remain protected until disposal. Host must protect the window with FLAG_SECURE.
- * A submitted request stays visible (busy on success, failed on rejection) until the next feed replaces it.
+ * A submitted request stays visible until the next feed replaces or withdraws it: busy after an accepted reply,
+ * [replyRejected] after a rejected one. After a rejection only Cancel is offered; otherwise only the next prompt
+ * or Core's own per-prompt timeout moves the attempt forward. A rejected cancel keeps the request visible with
+ * [cancelFailed]; a second Cancel then only closes the dialog locally.
  */
 internal class SshAuthenticationController {
     class Request(val sessionId: String, val requestId: String, val kind: String, val prompts: List<String>)
     var request by mutableStateOf<Request?>(null); private set
     var answers by mutableStateOf<List<String>>(emptyList()); private set
     var busy by mutableStateOf(false); private set
-    var failed by mutableStateOf(false); private set
+    /** The last reply was not accepted. Shown on the spent request and carried over to the next request only. */
+    var replyRejected by mutableStateOf(false); private set
+    /** The last cancel was not accepted. Never carried over to another request. */
+    var cancelFailed by mutableStateOf(false); private set
     private var spent by mutableStateOf<Request?>(null)
     /** True only while the visible request has not been submitted yet and nothing is in flight. */
     val canSubmit: Boolean get() = request.let { it != null && it !== spent } && !busy && !disposed
     private var disposed = false
     private var sessionId: String? = null
     private val consumed = mutableSetOf<Pair<String, String>>()
-    private var generation = 0
 
     fun feed(pendingJSON: String?) {
         if (disposed) return
@@ -49,12 +54,12 @@ internal class SshAuthenticationController {
             if (next.kind == old.kind && next.prompts == old.prompts) return
             // An immutable request changing under the same IDs is invalid.
             consumed.add(old.sessionId to old.requestId)
-            clear(); failed = true; return
+            clear(); return
         }
         if (old != null) consumed.add(old.sessionId to old.requestId)
-        // A rejection stays visible as a hint on the next request; a withdrawal clears it.
-        val keepFailed = failed && next != null
-        clear(); failed = keepFailed
+        // A reply rejection stays visible as a hint on the next request; a withdrawal clears it.
+        val keepRejected = replyRejected && next != null
+        clear(); replyRejected = keepRejected
         if (next != null && consumed.size < 8) {
             sessionId = next.sessionId
             request = next
@@ -71,7 +76,7 @@ internal class SshAuthenticationController {
     suspend fun submit(expected: Request? = request, reply: suspend (String, String, String) -> Boolean) {
         val current = expected ?: return
         if (request !== current || !canSubmit) return
-        busy = true; failed = false; spent = current
+        busy = true; replyRejected = false; spent = current
         consumed.add(current.sessionId to current.requestId)
         val wire = answers.joinToString(prefix = "[", postfix = "]") { quote(it) }
         answers = emptyList()
@@ -81,22 +86,26 @@ internal class SshAuthenticationController {
         // A completion for a replaced request or a disposed controller is dropped.
         if (request !== current || disposed) return
         // Accepted: stay busy until the next feed. Rejected: show the hint and allow only cancel.
-        if (!accepted) { busy = false; failed = true }
+        if (!accepted) { busy = false; replyRejected = true }
     }
-    /** [cancel] returns true only when the host accepted the cancellation. */
+    /** [cancel] returns true only when the host accepted the cancellation. After a rejected cancel the next
+     * call closes the dialog locally without calling the host again. */
     suspend fun cancel(expected: Request? = request, cancel: suspend (String, String) -> Boolean) {
         val current = expected ?: return
         if (request !== current || busy || disposed) return
         consumed.add(current.sessionId to current.requestId)
-        clear()
-        val started = generation
+        if (cancelFailed) { clear(); return }
+        busy = true; replyRejected = false; spent = current; answers = emptyList()
         val accepted = try { cancel(current.sessionId, current.requestId) }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
             catch (_: Exception) { false }
-        if (!accepted && generation == started && !disposed) failed = true
+        if (request !== current || disposed) return
+        if (accepted) clear() else { busy = false; cancelFailed = true }
     }
     fun dispose() { disposed = true; clear(); consumed.clear() }
-    private fun clear() { generation++; request = null; answers = emptyList(); busy = false; failed = false; spent = null }
+    private fun clear() {
+        request = null; answers = emptyList(); busy = false; replyRejected = false; cancelFailed = false; spent = null
+    }
 
     companion object {
         internal fun parse(wire: String?): Request? {
@@ -210,7 +219,8 @@ internal fun SshAuthenticationDialog(
     val scope = rememberCoroutineScope()
     DisposableEffect(controller) { onDispose { controller.dispose() } }
     val current = controller.request ?: return
-    // Dismissing (back, outside tap) cancels the request so the dialog never blocks the app.
+    // Dismissing (back, outside tap) cancels the request. It is ignored only while a reply or cancel is in flight
+    // or an accepted reply waits for the next feed; a second dismiss after a rejected cancel closes locally.
     val dismiss = { scope.launch { controller.cancel(current, cancel) }; Unit }
     // Block clipboard reads/writes and selection copy for every answer, including echo=true.
     val clipboard = remember { object : ClipboardManager {
@@ -223,8 +233,12 @@ internal fun SshAuthenticationDialog(
             properties = DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
             title = { Text(stringResource(R.string.ssh_auth_title)) },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                if (controller.failed) Text(stringResource(R.string.ssh_auth_reply_failed),
-                    color = MaterialTheme.colorScheme.error,
+                val hint = when {
+                    controller.cancelFailed -> R.string.ssh_auth_cancel_failed
+                    controller.replyRejected -> R.string.ssh_auth_reply_failed
+                    else -> null
+                }
+                if (hint != null) Text(stringResource(hint), color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 current.prompts.forEachIndexed { index, prompt ->
                     OutlinedTextField(value = controller.answers.getOrElse(index) { "" },
