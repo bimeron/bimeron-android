@@ -319,6 +319,8 @@ class ProfileStore internal constructor(
             }
             return directory
         }
+        private val PRIVATE_DIRECTORY = java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+        private val PRIVATE_FILE = java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
         @Volatile private var instance: ProfileStore? = null
         fun get(context: Context): ProfileStore {
             instance?.let { return it }
@@ -397,12 +399,17 @@ class ProfileStore internal constructor(
     private val epoch = java.security.SecureRandom().nextLong()
     private var counter = 0L
     private var ticketSeq = 0L
+    private val lastCommittedSeq = mutableMapOf<UUID, Long>()
     private val known = mutableMapOf<UUID, Pair<ProfileRevision, Sha256>>()
     private data class Request(val id: UUID, val kind: CommitReceipt.Kind, val expected: ProfileRevision?, val payload: String?, val draft: SshDraftResources?)
     private val receipts = mutableMapOf<UUID, Pair<Request, CommitReceipt>>()
     internal var renameProfile: (File, File) -> Boolean = { source, target ->
         java.nio.file.Files.move(source.toPath(), target.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
         true
+    }
+    /** Test hook for snapshot publication failures; must be atomic. */
+    internal var moveSnapshot: (File, File) -> Unit = { source, target ->
+        java.nio.file.Files.move(source.toPath(), target.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
     }
     private fun target(id: UUID) = File(directory, "$id.conf")
     private fun read(id: UUID): Pair<StoredProfile, ByteArray> {
@@ -441,16 +448,112 @@ class ProfileStore internal constructor(
             val uuid = UUID.fromString(id)
             require(uuid.toString() == id)
             val (stored, bytes) = read(uuid)
-            val document = ConfigDocument.parse(stored.profile.text)
-            val raw = document.value("AccessKey", "SSConf").ifEmpty { document.value("AccessKey", "Key") }
-            // Go strings.TrimSpace uses Unicode White_Space, excluding Java's extra control separators.
-            val source = raw.trim { it in '\u0009'..'\u000d' || it == ' ' || it == '\u0085' || it == '\u00a0' || it == '\u1680' || it in '\u2000'..'\u200a' || it == '\u2028' || it == '\u2029' || it == '\u202f' || it == '\u205f' || it == '\u3000' }
-                .takeIf { it.startsWith("ssconf://") }
+            val source = SSConfSnapshots.sourceOf(ConfigDocument.parse(stored.profile.text))
             val binding = source?.let(::SSConfBinding)
             SessionInput(uuid, bytes, stored.revision, stored.digest, binding,
-                source?.let { SnapshotTicket(uuid, it, ++ticketSeq, stillValid) }, null)
+                source?.let { SnapshotTicket(uuid, it, ++ticketSeq, stillValid) }, boundSnapshot(uuid, source))
         } catch (_: Exception) { throw ProfileError("INVALID_PROFILE") }
     } }
+    /**
+     * Persists [body] for the ticket's profile and source. Under [guard]: the profile must still exist
+     * with the ticket's source (source ABA is accepted), no newer ticket may have committed, and
+     * [SnapshotTicket.stillValid] must hold. Byte equality is never authority.
+     * Precondition: [body] is 1..[SSConfSnapshots.MAX_BODY] bytes and was already accepted by Core.
+     */
+    suspend fun commitSnapshot(ticket: SnapshotTicket, body: ByteArray): SnapshotCommitResult {
+        require(body.size in 1..SSConfSnapshots.MAX_BODY)
+        val owned = body.copyOf()
+        return withContext(Dispatchers.IO) {
+            currentCoroutineContext().ensureActive()
+            synchronized(guard) {
+                val id = ticket.profileId
+                if (!rootValid || !java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    return@synchronized SnapshotCommitResult.Conflict(ConflictReason.DELETED)
+                }
+                // An unreadable profile has no provable source.
+                val source = runCatching { SSConfSnapshots.sourceOf(ConfigDocument.parse(read(id).first.profile.text)) }.getOrNull()
+                if (source != ticket.source) return@synchronized SnapshotCommitResult.Conflict(ConflictReason.SOURCE_CHANGED)
+                if (ticket.seq <= (lastCommittedSeq[id] ?: 0L)) return@synchronized SnapshotCommitResult.Conflict(ConflictReason.SUPERSEDED)
+                if (!ticket.stillValid()) return@synchronized SnapshotCommitResult.Conflict(ConflictReason.STALE_TICKET)
+                val savedAt = System.currentTimeMillis()
+                try { writeSnapshot(id, SSConfSnapshots.encode(id, ticket.source, owned, savedAt)) }
+                catch (_: Exception) { return@synchronized SnapshotCommitResult.NotPersisted }
+                lastCommittedSeq[id] = ticket.seq
+                SnapshotCommitResult.Committed(StoredSnapshot(owned, Sha256.of(owned), savedAt))
+            }
+        }
+    }
+    /**
+     * Best effort: deletes the snapshot only if it decodes, is bound to the ticket's source and its body
+     * digest equals [digest]. The ticket stays usable for a following [commitSnapshot].
+     */
+    suspend fun discardSnapshot(ticket: SnapshotTicket, digest: Sha256) {
+        try {
+            withContext(Dispatchers.IO) { synchronized(guard) {
+                val id = ticket.profileId
+                val file = snapshotFile(id)
+                val decoded = readSnapshot(file)?.let { SSConfSnapshots.decodeBound(id, it) } ?: return@synchronized
+                if (decoded.source == ticket.source && decoded.snapshot.digest == digest) deleteSnapshotFile(file)
+            } }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) {}
+    }
+    private fun snapshotDirectory(): File {
+        require(rootValid)
+        val snapshots = File(directory.absoluteFile.parentFile, "ssconf")
+        trustedRoot?.let { checkedBelow(it, snapshots) }
+        require(!java.nio.file.Files.isSymbolicLink(snapshots.toPath()))
+        return snapshots
+    }
+    private fun snapshotFile(id: UUID) = File(snapshotDirectory(), "$id.snap")
+    /** Bytes of a regular snapshot file, or null when absent. Symlinks and other types throw. */
+    private fun readSnapshot(file: File): ByteArray? {
+        val path = file.toPath()
+        if (!java.nio.file.Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null
+        require(java.nio.file.Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        return file.inputStream().use { input ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (output.size() <= SSConfSnapshots.MAX_FILE) {
+                val n = input.read(buffer, 0, minOf(buffer.size, SSConfSnapshots.MAX_FILE + 1 - output.size()))
+                if (n < 0) break
+                output.write(buffer, 0, n)
+            }
+            output.toByteArray()
+        }
+    }
+    private fun deleteSnapshotFile(file: File) {
+        if (java.nio.file.Files.deleteIfExists(file.toPath())) syncDirectory(file.parentFile!!)
+    }
+    /** The decoded snapshot bound to [source]; a corrupt, foreign or stale file is deleted. Never throws. */
+    private fun boundSnapshot(id: UUID, source: String?): StoredSnapshot? = runCatching {
+        val file = snapshotFile(id)
+        val bytes = readSnapshot(file) ?: return@runCatching null
+        val decoded = SSConfSnapshots.decodeBound(id, bytes)
+        if (decoded != null && source != null && decoded.source == source) return@runCatching decoded.snapshot
+        deleteSnapshotFile(file)
+        null
+    }.getOrNull()
+    /** Called under [guard] after a profile commit: keeps the snapshot only if it is still bound to [source]. */
+    private fun retainSnapshotFor(id: UUID, source: String?) { boundSnapshot(id, source) }
+    private fun writeSnapshot(id: UUID, bytes: ByteArray) {
+        val snapshots = snapshotDirectory()
+        if (!java.nio.file.Files.exists(snapshots.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            java.nio.file.Files.createDirectory(snapshots.toPath(), PRIVATE_DIRECTORY)
+            syncDirectory(snapshots.parentFile)
+        }
+        require(java.nio.file.Files.isDirectory(snapshots.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        java.nio.file.Files.setPosixFilePermissions(snapshots.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+        val suffix = java.security.SecureRandom().nextLong().toULong().toString(16)
+        val temp = File(snapshots, "$id.snap.tmp-$suffix")
+        try {
+            java.nio.file.Files.createFile(temp.toPath(), PRIVATE_FILE)
+            java.nio.file.Files.setPosixFilePermissions(temp.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
+            java.io.FileOutputStream(temp).use { it.write(bytes); it.fd.sync() }
+            moveSnapshot(temp, File(snapshots, "$id.snap"))
+        } finally { java.nio.file.Files.deleteIfExists(temp.toPath()) }
+        syncDirectory(snapshots)
+    }
     suspend fun committedReceipt(requestId: UUID): CommitReceipt? = withContext(Dispatchers.IO) {
         synchronized(guard) { receipts[requestId]?.second }
     }
@@ -468,8 +571,8 @@ class ProfileStore internal constructor(
         val current = try { read(id).first } catch (_: Exception) { return ConflictReason.UNREADABLE }
         return when { expected == null -> ConflictReason.EXISTS; current.revision != expected -> ConflictReason.CHANGED; else -> null }
     }
-    private fun syncDirectory() { runCatching {
-        java.nio.channels.FileChannel.open(directory.toPath(), java.nio.file.StandardOpenOption.READ).use { it.force(true) }
+    private fun syncDirectory(target: File = directory) { runCatching {
+        java.nio.channels.FileChannel.open(target.toPath(), java.nio.file.StandardOpenOption.READ).use { it.force(true) }
     } }
     suspend fun validate(text: String, imports: SshDraftResources? = null): Unit = withContext(Dispatchers.IO) {
         val text = imports?.resolve(text, resources) ?: text
@@ -519,6 +622,7 @@ class ProfileStore internal constructor(
                     known[id] = revision to digest
                     draft?.saved(normalized)
                     syncDirectory()
+                    retainSnapshotFor(id, runCatching { SSConfSnapshots.sourceOf(ConfigDocument.parse(normalized)) }.getOrNull())
                     runCatching { resources.afterSaved(id, SshDraftResources.paths(normalized)) }
                     CommitResult.Committed(receipt)
                 }
@@ -537,6 +641,7 @@ class ProfileStore internal constructor(
             receipts[requestId] = request to receipt
             known.remove(id)
             syncDirectory()
+            runCatching { deleteSnapshotFile(snapshotFile(id)) }
             runCatching { resources.afterDeleted(id) }
             CommitResult.Committed(receipt)
         }
