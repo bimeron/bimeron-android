@@ -2,9 +2,12 @@ package org.bimeron.app
 
 import android.content.Context
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import org.bimeron.core.androidcore.Androidcore
+import org.bimeron.core.androidcore.SSConfSnapshot
 import org.bimeron.core.androidcore.SSConfSocketProtector
 
 /**
@@ -19,6 +22,28 @@ internal class SSConfFailure(val code: VpnErrorCode) : Exception() {
 /** Fixed journal text for a validated snapshot that could not be persisted; not a [VpnErrorCode]. */
 internal const val SNAPSHOT_NOT_PERSISTED = "SNAPSHOT_NOT_PERSISTED"
 
+/** The part of an [SSConfNetworkLease] that [fetchSSConf] uses; a seam for JVM tests. */
+internal interface SSConfFetchLease {
+    val networkID: String
+    val dns: String
+    fun isValid(): Boolean
+    fun onInvalidated(cancel: () -> Unit): AutoCloseable
+    fun protect(fd: Long): Boolean
+    fun bind(fd: Long): Boolean
+}
+
+/** One native SSConf request: [resolve] blocks until the body arrives or fails; [cancel] aborts it. */
+internal interface SSConfFetchRequest {
+    fun resolve(): ByteArray
+    fun cancel()
+}
+
+/** Creates a request from (source, networkID, dns, protector). */
+internal typealias SSConfRequestFactory = (String, String, String, SSConfSocketProtector) -> SSConfFetchRequest
+
+/** Runs a non-suspending block inside one lease scope and returns its result. */
+internal typealias SSConfLeaseScope = suspend (block: (SSConfFetchLease) -> ByteArray) -> ByteArray
+
 /**
  * Sole consumer of [SSConfNetworkLease] / [withSSConfNetwork]. Bind-only; never starts a VPN.
  * Must be called off Main. Performs exactly one request with no retry and returns the raw body;
@@ -27,21 +52,39 @@ internal const val SNAPSHOT_NOT_PERSISTED = "SNAPSHOT_NOT_PERSISTED"
  * Failures map only to [VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE] or [VpnErrorCode.SSCONF_FETCH_FAILED].
  * Coroutine cancellation is rethrown as is.
  */
-internal suspend fun fetchSSConf(context: Context, source: String): ByteArray = try {
-    withSSConfNetwork(context) { lease ->
+internal suspend fun fetchSSConf(context: Context, source: String): ByteArray = fetchSSConf(
+    source,
+    leaseScope = { block -> withSSConfNetwork(context) { lease -> block(lease.asFetchLease()) } },
+    newRequest = ::coreSSConfRequest,
+)
+
+/**
+ * [fetchSSConf] with an injectable [leaseScope] and [newRequest]. Request creation or resolve
+ * failing while the lease is invalidated is a network loss ([VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE]);
+ * otherwise it is [VpnErrorCode.SSCONF_FETCH_FAILED]. The invalidation registration is closed on
+ * every path, and cancellation of the caller wins over any failure.
+ */
+internal suspend fun fetchSSConf(
+    source: String,
+    leaseScope: SSConfLeaseScope,
+    newRequest: SSConfRequestFactory,
+): ByteArray = try {
+    leaseScope { lease ->
+        // Only a fixed code leaves this scope; the cause may carry Core diagnostics.
+        fun failure() = SSConfFailure(
+            if (lease.isValid()) VpnErrorCode.SSCONF_FETCH_FAILED else VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE,
+        )
         val request = try {
-            Androidcore.newSSConfRequest(source, lease.networkID, lease.dns, lease.protector())
+            newRequest(source, lease.networkID, lease.dns, lease.protector())
         } catch (_: Exception) {
-            throw SSConfFailure(VpnErrorCode.SSCONF_FETCH_FAILED)
+            throw failure()
         }
         lease.onInvalidated { request.cancel() }.use {
             try {
-                request.resolve().content()
+                request.resolve()
             } catch (_: Exception) {
                 // A resolve cancelled by lease invalidation is a network loss, not a fetch error.
-                throw SSConfFailure(
-                    if (lease.isValid()) VpnErrorCode.SSCONF_FETCH_FAILED else VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE,
-                )
+                throw failure()
             }
         }
     }
@@ -57,7 +100,32 @@ internal suspend fun fetchSSConf(context: Context, source: String): ByteArray = 
     }
 }
 
-private fun SSConfNetworkLease.protector() = object : SSConfSocketProtector {
+private fun coreSSConfRequest(
+    source: String,
+    networkID: String,
+    dns: String,
+    protector: SSConfSocketProtector,
+): SSConfFetchRequest {
+    val request = Androidcore.newSSConfRequest(source, networkID, dns, protector)
+    return object : SSConfFetchRequest {
+        override fun resolve(): ByteArray = request.resolve().content()
+        override fun cancel() = request.cancel()
+    }
+}
+
+private fun SSConfNetworkLease.asFetchLease(): SSConfFetchLease {
+    val lease = this
+    return object : SSConfFetchLease {
+        override val networkID: String get() = lease.networkID
+        override val dns: String get() = lease.dns
+        override fun isValid(): Boolean = lease.isValid()
+        override fun onInvalidated(cancel: () -> Unit): AutoCloseable = lease.onInvalidated(cancel)
+        override fun protect(fd: Long): Boolean = lease.protect(fd)
+        override fun bind(fd: Long): Boolean = lease.bind(fd)
+    }
+}
+
+private fun SSConfFetchLease.protector() = object : SSConfSocketProtector {
     override fun protect(fd: Long): Boolean = this@protector.protect(fd)
     override fun bind(fd: Long): Boolean = this@protector.bind(fd)
 }
@@ -75,9 +143,30 @@ private fun SSConfNetworkLease.protector() = object : SSConfSocketProtector {
  *   [VpnErrorCode.PROFILE_CHANGED].
  *
  * [ensureAttempt] runs before the first step and after every suspension point; it throws
- * [CancellationException] for a stale attempt. [validate] throws when Core rejects a body.
+ * [CancellationException] for a stale attempt, so a commit conflict caused by a stale attempt is
+ * cancellation rather than [VpnErrorCode.PROFILE_CHANGED]. [validate] throws when Core rejects a body.
+ *
+ * This step runs before the capability check, so a native load failure from [validate] or [fetch]
+ * (see [isNativeLoadFailure]) fails with [VpnErrorCode.CORE_INCOMPATIBLE] instead of escaping as an
+ * [Error]. Other errors propagate.
  */
 internal suspend fun <T> resolveSessionSnapshot(
+    ticket: SnapshotTicket,
+    stored: StoredSnapshot?,
+    ensureAttempt: suspend () -> Unit,
+    validate: suspend (ByteArray) -> T,
+    fetch: suspend () -> ByteArray,
+    discard: suspend (SnapshotTicket, Sha256) -> Unit,
+    commit: suspend (SnapshotTicket, ByteArray) -> SnapshotCommitResult,
+    warn: (String) -> Unit,
+): T = try {
+    resolveSnapshotSteps(ticket, stored, ensureAttempt, validate, fetch, discard, commit, warn)
+} catch (error: LinkageError) {
+    if (isNativeLoadFailure(error)) throw SSConfFailure(VpnErrorCode.CORE_INCOMPATIBLE)
+    throw error
+}
+
+private suspend fun <T> resolveSnapshotSteps(
     ticket: SnapshotTicket,
     stored: StoredSnapshot?,
     ensureAttempt: suspend () -> Unit,
@@ -116,4 +205,28 @@ private suspend fun <T> validateOrNull(validate: suspend (ByteArray) -> T, body:
     throw cancelled
 } catch (_: Exception) {
     null
+}
+
+/**
+ * The service's snapshot step for one SSConf attempt: Core validates on IO, [store] discards and
+ * commits, and [fetch] runs only when no persisted snapshot is usable. Holds no store guard or
+ * attempt monitor across JNI or the network.
+ */
+internal suspend fun loadSessionSnapshot(
+    store: ProfileStore,
+    input: SessionInput,
+    token: Long,
+    fetch: suspend (source: String) -> ByteArray,
+): SSConfSnapshot {
+    val source = requireNotNull(input.ssconf).source
+    return resolveSessionSnapshot(
+        ticket = requireNotNull(input.ticket),
+        stored = input.snapshot,
+        ensureAttempt = { ensureSessionAttempt(token) },
+        validate = { body -> withContext(Dispatchers.IO) { Androidcore.newSSConfSnapshot(source, body) } },
+        fetch = { withContext(Dispatchers.IO) { fetch(source) } },
+        discard = store::discardSnapshot,
+        commit = store::commitSnapshot,
+        warn = { code -> AppEvents.add(code, LogLevel.WARNING) },
+    )
 }

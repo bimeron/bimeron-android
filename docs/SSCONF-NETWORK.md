@@ -4,9 +4,12 @@
 of `withSSConfNetwork` and `SSConfNetworkLease`; no other app code may use them.
 It performs one bounded request with no retry (5 s bind, 5 s capture, 15 s Core
 resolve), must be called off Main, and maps failures only to the fixed codes
-`SSCONF_NETWORK_UNAVAILABLE` (acquisition failure, or a resolve cancelled by lease
-invalidation) and `SSCONF_FETCH_FAILED` (any other request/resolve error). Source,
-body and lease diagnostics never enter exception messages, `VpnState` or the journal.
+`SSCONF_NETWORK_UNAVAILABLE` (acquisition failure, or request creation or resolve
+failing after lease invalidation) and `SSCONF_FETCH_FAILED` (any other request/resolve
+error). Cancellation of the caller wins over any failure, and the invalidation
+registration is closed on every path. Source, body and lease diagnostics never enter
+exception messages, `VpnState` or the journal. An internal overload takes the lease
+scope and request factory as seams (JVM tests: `SSConfFetchMappingTest`).
 
 The VPN service uses it only when an SSConf profile has no usable persisted snapshot.
 A persisted snapshot that Core accepts is reused without network access and is never
@@ -18,7 +21,16 @@ with `PROFILE_CHANGED`; an I/O failure to persist continues with the validated i
 snapshot and records `SNAPSHOT_NOT_PERSISTED` in the journal at WARNING. All of this
 happens before the native cleanup gate, capability check and TUN; the session is then
 created with `Androidcore.newSessionWithSSConfSnapshot`. The decision logic is
-`resolveSessionSnapshot` (JVM tests: `SSConfSessionSnapshotTest`).
+`resolveSessionSnapshot` (JVM tests: `SSConfSessionSnapshotTest`); the creation order is
+`createCoreSession` (JVM tests: `CoreSessionOrderTest`). Because this step precedes the
+capability check, a native load failure during it (`UnsatisfiedLinkError`,
+`NoSuchMethodError`, or `NoClassDefFoundError` caused by a failed native load) fails
+the attempt with `CORE_INCOMPATIBLE`, like `CoreCapabilities`. A commit conflict seen
+by an attempt that is already stale is cancellation, not `PROFILE_CHANGED`.
+Instrumentation: `SSConfFetchTest` (real fetch failure paths, observer count back at 0,
+state and token unchanged) and `SnapshotStartTest` (the service's snapshot step with a
+real store and native validation; no fetch for a valid snapshot, exactly one for a
+corrupt or Core-rejected one).
 
 `withSSConfNetwork(context, block)` requires existing VPN consent and binds the
 private same-UID service without starting a VPN session. Acquisition waits at

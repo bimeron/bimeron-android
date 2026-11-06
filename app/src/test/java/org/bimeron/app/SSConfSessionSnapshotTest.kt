@@ -63,6 +63,7 @@ class SSConfSessionSnapshotTest {
         result: SnapshotCommitResult = SnapshotCommitResult.Committed(stored(good)),
         ensureAttempt: suspend () -> Unit = {},
         ticket: SnapshotTicket = ticket(),
+        fetch: suspend () -> ByteArray = { calls.log += "fetch"; fetched() },
     ): String = resolveSessionSnapshot(
         ticket = ticket,
         stored = stored,
@@ -71,7 +72,7 @@ class SSConfSessionSnapshotTest {
             calls.log += "validate"
             if (body.contentEquals(rejected)) throw IllegalStateException("core rejected $source") else String(body)
         },
-        fetch = { calls.log += "fetch"; fetched() },
+        fetch = fetch,
         discard = { _, digest -> calls.log += "discard"; assertEquals(Sha256.of(rejected), digest) },
         commit = { _, body -> calls.log += "commit"; calls.committed = body; result },
         warn = { calls.warnings += it; AppEvents.add(it, LogLevel.WARNING) },
@@ -143,19 +144,99 @@ class SSConfSessionSnapshotTest {
         }
     }
 
-    @Test fun fetchFailuresKeepFixedCodesWithoutSourceInStateOrJournal() = runBlocking {
-        for (code in listOf(VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE, VpnErrorCode.SSCONF_FETCH_FAILED)) {
+    /**
+     * Real chain: [fetchSSConf] mapping (fake lease scope and request only) → [resolveSessionSnapshot]
+     * → [sessionFailureCode] → the same [VpnLive.publishFailure] call BimeronVpnService.publishFailure makes.
+     */
+    @Test fun fetchFailuresPublishFixedCodesWithoutSourceInStateOrJournal() = runBlocking {
+        val cases = listOf<Pair<VpnErrorCode, (FakeFetchLease) -> SSConfLeaseScope>>(
+            VpnErrorCode.SSCONF_FETCH_FAILED to { lease -> lease.scope },
+            VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE to { lease ->
+                { block -> lease.state.invalidate(SSConfDiagnostic.NETWORK_LOST); block(lease) }
+            },
+            VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE to { _ ->
+                { throw SSConfNetworkUnavailableException("state=INVALIDATED $source") }
+            },
+        )
+        for ((expected, scopeOf) in cases) {
             AppEvents.clear()
             val calls = Calls()
+            val lease = FakeFetchLease()
             val token = VpnLive.gate.next()
-            val failure = expectFailure(code) { resolve(calls, null, fetched = { throw SSConfFailure(code) }) }
+            val factory = FakeRequestFactory {
+                FakeFetchRequest { throw java.io.IOException("resolve failed for $source") }
+            }
+            val error = try {
+                resolve(calls, null, ensureAttempt = { ensureSessionAttempt(token) }, fetch = {
+                    calls.log += "fetch"
+                    fetchSSConf(source, scopeOf(lease), factory)
+                })
+                null
+            } catch (e: SSConfFailure) { e } ?: throw AssertionError("Expected $expected")
             assertNull(calls.committed)
-            VpnLive.publishFailure(failure.code, app.getString(failure.code.messageRes), "profile-${code.name}", token)
+            assertEquals(listOf("fetch"), calls.log)
+            assertEquals(0, lease.openRegistrations)
+            val code = sessionFailureCode(error)
+            assertEquals(expected, code)
+            VpnLive.publishFailure(code, app.getString(code.messageRes), "profile-${code.name}", token)
             val state = VpnLive.state.value
             assertEquals("failed", state.state)
-            assertEquals(code, state.code)
+            assertEquals(expected, state.code)
+            assertEquals(app.getString(expected.messageRes), state.message)
             assertFalse(state.toString().contains("secret-host"))
+            assertFalse(error.toString().contains("secret-host"))
             assertFalse(AppEvents.entries.value.any { it.message.contains("secret-host") || it.message.contains("ssconf://") })
+        }
+    }
+
+    @Test fun staleTokenConflictIsCancellationNotProfileChanged() = runBlocking {
+        val store = ProfileStore(null, temp.newFolder(), SshProfileResources(temp.newFolder())) {}
+        val id = UUID.randomUUID()
+        store.compareAndSave(UUID.randomUUID(), id, null, Conf.fromKey("A", source), null)
+        val token = VpnLive.gate.next()
+        val input = readSessionInput(store, id.toString(), token)
+        var result: SnapshotCommitResult? = null
+        try {
+            resolveSessionSnapshot(input.ticket!!, input.snapshot, { ensureSessionAttempt(token) }, { String(it) },
+                fetch = { good }, discard = store::discardSnapshot,
+                commit = { ticket, body ->
+                    // A newer attempt supersedes this one between the last check and the commit.
+                    VpnLive.gate.next()
+                    store.commitSnapshot(ticket, body).also { result = it }
+                },
+                warn = { fail("warned") })
+            fail("stale attempt continued")
+        } catch (e: CancellationException) {
+            assertFalse(e is SSConfFailure)
+        }
+        assertEquals(SnapshotCommitResult.Conflict(ConflictReason.STALE_TICKET), result)
+        assertNull(store.readForSession(id.toString()) { true }.snapshot)
+    }
+
+    @Test fun nativeLoadFailureDuringValidationIsCoreIncompatible() = runBlocking {
+        val errors = listOf<LinkageError>(UnsatisfiedLinkError("gojni"), NoSuchMethodError("newSSConfSnapshot"),
+            NoClassDefFoundError("Androidcore").apply { initCause(UnsatisfiedLinkError("gojni")) })
+        for (error in errors) {
+            val calls = Calls()
+            expectFailure(VpnErrorCode.CORE_INCOMPATIBLE) {
+                resolveSessionSnapshot(ticket(), stored(good), {}, validate = { throw error },
+                    fetch = { calls.log += "fetch"; good }, discard = { _, _ -> calls.log += "discard" },
+                    commit = { _, _ -> calls.log += "commit"; SnapshotCommitResult.NotPersisted }, warn = {})
+            }
+            assertTrue(calls.log.isEmpty())
+            assertEquals(VpnErrorCode.CORE_INCOMPATIBLE, sessionFailureCode(SSConfFailure(VpnErrorCode.CORE_INCOMPATIBLE)))
+        }
+    }
+
+    @Test fun unrelatedLinkageErrorsPropagate() = runBlocking {
+        for (error in listOf<LinkageError>(NoClassDefFoundError("Unrelated"), ClassFormatError("bad"))) {
+            try {
+                resolveSessionSnapshot(ticket(), null, {}, { String(it) }, fetch = { throw error },
+                    discard = { _, _ -> }, commit = { _, _ -> SnapshotCommitResult.NotPersisted }, warn = {})
+                fail("Expected $error")
+            } catch (e: LinkageError) {
+                assertTrue(e === error)
+            }
         }
     }
 

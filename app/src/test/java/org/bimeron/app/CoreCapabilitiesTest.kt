@@ -18,6 +18,13 @@ class CoreCapabilitiesTest {
         assertNull(CoreCapabilities.capabilityJson { throw NoSuchMethodError() })
         assertNull(CoreCapabilities.capabilityJson { throw UnsatisfiedLinkError() })
     }
+    @Test fun failedNativeInitializationIsUnknownButUnrelatedMissingClassPropagates() {
+        val chained = NoClassDefFoundError("Androidcore").apply { initCause(ExceptionInInitializerError(UnsatisfiedLinkError())) }
+        assertNull(CoreCapabilities.capabilityJson { throw chained })
+        val unrelated = NoClassDefFoundError("Unrelated")
+        try { CoreCapabilities.capabilityJson { throw unrelated }; fail("Expected propagation") }
+        catch (e: NoClassDefFoundError) { assertSame(unrelated, e) }
+    }
     @Test(expected = OutOfMemoryError::class)
     fun fatalErrorsPropagate() { CoreCapabilities.capabilityJson { throw OutOfMemoryError() } }
 }
