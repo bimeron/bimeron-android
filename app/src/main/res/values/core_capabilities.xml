@@ -18,6 +18,5 @@
     <string name="core_daemon">Daemon</string>
     <string name="core_ikev2">System IKEv2</string>
     <string name="core_build_note">Embedded build support does not guarantee a working server or granted permissions.</string>
-    <string name="core_vpn_incompatible">This core does not report Android VPN support with both IPv4 and IPv6.</string>
     <string name="core_schema">GeoData schema: %1$s</string>
 </resources>

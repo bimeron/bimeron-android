@@ -3,14 +3,7 @@
     <string name="app_name">Bimeron</string>
     <string name="vpn_notification_channel">Bimeron VPN</string>
     <string name="vpn_notification_text">Connection active</string>
-    <string name="invalid_profile">Profile unavailable</string>
-    <string name="network_error">Physical network error</string>
-    <string name="no_network">No physical network available</string>
-    <string name="tun_error">Could not create the VPN interface</string>
     <string name="core_error">The core could not establish a connection</string>
-    <string name="vpn_start_error">Could not start VPN. Check the configuration</string>
-    <string name="vpn_stop_error">Could not stop VPN</string>
-    <string name="packet_error">VPN packet transmission error</string>
     <string name="connection">Connection</string>
     <string name="profiles">Profiles</string>
     <string name="settings">Settings</string>

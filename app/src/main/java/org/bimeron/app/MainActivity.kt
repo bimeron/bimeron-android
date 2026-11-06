@@ -111,7 +111,7 @@ class MainActivity : ComponentActivity() {
         model.pendingPermissionId = null
         if (result.resultCode == RESULT_OK && id != null && model.selected.value == id && VpnLive.state.value.state == "permission") startVpn(id)
         else if (VpnLive.state.value.state == "permission") {
-            VpnLive.publish(VpnState("failed", message = getString(R.string.permission_denied)), VpnLive.gate.next())
+            VpnLive.publish(failureState(VpnErrorCode.PERMISSION_DENIED, { getString(it) }), VpnLive.gate.next())
             model.log(getString(R.string.journal_vpn_permission_denied), LogLevel.WARNING)
         }
     }
