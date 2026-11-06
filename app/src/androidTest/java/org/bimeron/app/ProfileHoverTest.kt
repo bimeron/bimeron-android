@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
+import android.view.View
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
@@ -61,8 +62,8 @@ class ProfileHoverTest {
                     }
                     inset = (8 * it.resources.displayMetrics.density).toInt()
                 }
-                val bodyPoint = android.graphics.Point(rect.left + inset, rect.centerY())
-                val settingsPoint = android.graphics.Point(settings.left + settings.width() / 8, settings.centerY())
+                val bodyPoint = bodySample(rect, inset)
+                val settingsPoint = settingsSample(settings)
                 fun sample(bitmap: Bitmap, point: android.graphics.Point, region: Rect): Int {
                     assertTrue("Sample $point outside region $region", region.contains(point.x, point.y))
                     assertTrue("Sample $point outside screen $screen", screen.contains(point.x, point.y))
@@ -105,11 +106,31 @@ class ProfileHoverTest {
                 assertTrue("Selection fixture row is not checked", selectedGeometry.checked)
                 val selectedRect = selectedGeometry.row
                 val selectedSettings = selectedGeometry.settings
-                val selectedPoint = android.graphics.Point(selectedRect.left + inset, selectedRect.centerY())
-                val selectedSettingsPoint = android.graphics.Point(selectedSettings.left + selectedSettings.width() / 8, selectedSettings.centerY())
+                val selectedPoint = bodySample(selectedRect, inset)
+                val selectedSettingsPoint = settingsSample(selectedSettings)
+                // The pointer still rests where the previous step left it, and showing the selected row may
+                // have scrolled that row under it; Compose re-sends hover after a layout change. Park the
+                // pointer in the page margin beside the row, outside both of its parts, so the baseline is
+                // taken without hover.
+                val selectedSpan = Rect(selectedRect).apply { union(selectedSettings) }
+                val neutral = android.graphics.Point(
+                    if (rtl()) (selectedSpan.right + screen.right) / 2 else (screen.left + selectedSpan.left) / 2,
+                    selectedRect.centerY())
+                Log.i("HoverGeometry", "neutral pointer=$neutral selectedRow=$selectedRect selectedSettings=$selectedSettings")
+                assertTrue("Neutral pointer $neutral is inside the selected row $selectedRect or its settings $selectedSettings",
+                    !selectedRect.contains(neutral.x, neutral.y) && !selectedSettings.contains(neutral.x, neutral.y) &&
+                        neutral.x !in selectedSpan.left..selectedSpan.right)
+                assertTrue("Neutral pointer $neutral outside screen $screen", screen.contains(neutral.x, neutral.y))
+                hover(neutral.x, neutral.y)
+                Thread.sleep(200)
                 val selectedBefore = ui.takeScreenshot()
+                saveScreenshot(app, selectedBefore, "hover-selected-before.png")
+                // The baseline and the hover points are only meaningful for the row as measured.
+                assertEquals("Selected profile row moved after it was measured", selectedGeometry,
+                    readableRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name)))
                 for (targetPoint in listOf(android.graphics.Point(selectedRect.centerX(), selectedRect.centerY()),
                     android.graphics.Point(selectedSettings.centerX(), selectedSettings.centerY()))) {
+                    Log.i("HoverGeometry", "pointer=$targetPoint selectedRow=$selectedRect selectedSettings=$selectedSettings")
                     hover(targetPoint.x, targetPoint.y)
                     Thread.sleep(200)
                     val selectedAfter = ui.takeScreenshot()
@@ -129,6 +150,17 @@ class ProfileHoverTest {
     }
 
     private fun bounds(node: AccessibilityNodeInfo) = Rect().also { node.getBoundsInScreen(it) }
+
+    private fun rtl() = ApplicationProvider.getApplicationContext<android.app.Application>()
+        .resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+
+    /** Inside the row body at its start edge, away from the settings action. */
+    private fun bodySample(row: Rect, inset: Int) =
+        android.graphics.Point(if (rtl()) row.right - 1 - inset else row.left + inset, row.centerY())
+
+    /** Inside the settings action on the side that faces the row body. */
+    private fun settingsSample(settings: Rect) = android.graphics.Point(
+        if (rtl()) settings.right - 1 - settings.width() / 8 else settings.left + settings.width() / 8, settings.centerY())
 
     /**
      * Searches the current tree, refreshing every visited node. UiAutomation's node cache can lag
@@ -187,10 +219,12 @@ class ProfileHoverTest {
     /** Waits until two consecutive fresh reads of the whole window agree, e.g. after a deliberate scroll. */
     private fun awaitStill(timeoutMs: Long = 5_000) {
         val deadline = SystemClock.uptimeMillis() + timeoutMs
-        var previous = snapshot(root())
+        // Only the scrolling page matters; views outside it (system bars, other animations) are ignored.
+        fun page() = root()?.let { root -> find(root) { it.isScrollable } ?: root }
+        var previous = snapshot(page())
         while (SystemClock.uptimeMillis() < deadline) {
             Thread.sleep(100)
-            val current = snapshot(root())
+            val current = snapshot(page())
             if (current == previous) return
             previous = current
         }
@@ -250,11 +284,12 @@ class ProfileHoverTest {
         if (rowBounds.top != settingsBounds.top || rowBounds.bottom != settingsBounds.bottom) {
             return RowRead.Unreadable("row and settings span different heights: row=$rowBounds settings=$settingsBounds")
         }
-        // The settings action sits beside the row body, on either side depending on layout direction.
-        if (settingsBounds.left < rowBounds.right && rowBounds.left < settingsBounds.right) {
-            return RowRead.Unreadable("settings overlaps the row horizontally: row=$rowBounds settings=$settingsBounds")
+        // The settings action follows the row body: to its right in LTR, to its left in RTL.
+        if (if (rtl()) settingsBounds.right > rowBounds.left else settingsBounds.left < rowBounds.right) {
+            return RowRead.Unreadable("settings action not after the row body (rtl=${rtl()}): row=$rowBounds settings=$settingsBounds")
         }
-        if (content.isEmpty || !rowBounds.contains(content)) return RowRead.Unreadable("row text $content not inside row $rowBounds")
+        // Empty text bounds mean only the row's padding is visible; clippedEdge() sends that back to scrolling.
+        if (!content.isEmpty && !rowBounds.contains(content)) return RowRead.Unreadable("row text $content not inside row $rowBounds")
         return RowRead.Read(RowGeometry(rowBounds, settingsBounds, content, row.isChecked))
     }
 
@@ -299,6 +334,10 @@ class ProfileHoverTest {
      * paddings, so clipping shows up as unequal gaps above and below the text.
      */
     private fun clippedEdge(geometry: RowGeometry): String? {
+        if (geometry.content.isEmpty) {
+            val page = root()?.let { root -> find(root) { it.isScrollable } }?.let(::bounds)
+            return if (page != null && geometry.row.top <= page.top) "top" else "bottom"
+        }
         val tolerance = maxOf(2, InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density.toInt() * 2)
         val above = geometry.content.top - geometry.row.top
         val below = geometry.row.bottom - geometry.content.bottom
@@ -332,9 +371,11 @@ class ProfileHoverTest {
      * deliberate step here, never part of a wait: [stableRow] and the "row moved" check catch any
      * movement between this measurement and the hover.
      */
-    private fun showRow(name: String, settingsLabel: String): RowGeometry {
+    private fun showRow(name: String, settingsLabel: String, timeoutMs: Long = 30_000): RowGeometry {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
         var geometry: RowGeometry? = null
         repeat(4) { attempt ->
+            if (SystemClock.uptimeMillis() >= deadline) error("Profile row not shown in full within ${timeoutMs}ms: $name: $geometry")
             val row = revealText(name).ancestor { it.isCheckable }
             val clipped = geometry?.let(::clippedEdge)
             if (clipped == null) {
@@ -349,7 +390,7 @@ class ProfileHoverTest {
                 Log.i("HoverVisibility", "'$name' clipped at $clipped; fallback scroll ${direction.id} on ${scrollable?.let(::bounds)} performed=$scrolled")
             }
             awaitStill()
-            val settled = stableRow(name, settingsLabel)
+            val settled = stableRow(name, settingsLabel, minOf(10_000, maxOf(1_000, deadline - SystemClock.uptimeMillis())))
             geometry = settled
             val edge = clippedEdge(settled)
             Log.i("HoverVisibility", "'$name' attempt=$attempt settled at $settled clipped=${edge ?: "no"}")
