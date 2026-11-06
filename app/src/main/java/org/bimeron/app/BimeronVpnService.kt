@@ -29,6 +29,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.bimeron.core.androidcore.Androidcore
+import org.bimeron.core.androidcore.SSConfSnapshot
 import org.bimeron.core.androidcore.Session
 import org.bimeron.core.androidcore.SocketProtector
 import org.json.JSONObject
@@ -309,12 +310,18 @@ class BimeronVpnService : VpnService() {
                     } catch (_: Exception) { false }
                 }
             }
+            // SSConf: obtain a Core-validated snapshot before any native session, capability or TUN work.
+            val snapshot = sessionInput.ssconf?.let { binding -> sessionSnapshot(sessionInput, binding.source, token) }
             ensureSessionAttempt(token)
             if (!NativeCleanupGate.acquire()) throw SessionFailure(VpnErrorCode.CLEANUP_BLOCKED)
             ownsNative = true
             if (!CoreCapabilities.read().canStartVpn) throw SessionFailure(VpnErrorCode.CORE_INCOMPATIBLE)
             ensureSessionAttempt(token)
-            current = Androidcore.newSession(sessionInput.bytes, protector)
+            current = if (snapshot != null) {
+                Androidcore.newSessionWithSSConfSnapshot(sessionInput.bytes, snapshot, null, null, protector)
+            } else {
+                Androidcore.newSession(sessionInput.bytes, protector)
+            }
             val session = current
             val watcher = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) = updateNetwork(session, token)
@@ -378,6 +385,8 @@ class BimeronVpnService : VpnService() {
             throw e
         } catch (e: SessionFailure) {
             publishFailure(e.code, id, token)
+        } catch (e: SSConfFailure) {
+            publishFailure(e.code, id, token)
         } catch (_: Exception) {
             publishFailure(VpnErrorCode.START_FAILED, id, token)
         } finally {
@@ -391,6 +400,26 @@ class BimeronVpnService : VpnService() {
                 commands.trySend(Command.Finished(token))
             }
         }
+    }
+
+    /**
+     * Reuses the persisted snapshot without network access, or performs one bounded fetch and commits it.
+     * Never refetches a valid snapshot. Runs on IO; no store guard or attempt monitor is held across
+     * JNI or the network.
+     */
+    private suspend fun sessionSnapshot(input: SessionInput, source: String, token: Long): SSConfSnapshot {
+        val ticket = requireNotNull(input.ticket)
+        val store = withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }
+        return resolveSessionSnapshot(
+            ticket = ticket,
+            stored = input.snapshot,
+            ensureAttempt = { ensureSessionAttempt(token) },
+            validate = { body -> withContext(Dispatchers.IO) { Androidcore.newSSConfSnapshot(source, body) } },
+            fetch = { withContext(Dispatchers.IO) { fetchSSConf(applicationContext, source) } },
+            discard = store::discardSnapshot,
+            commit = store::commitSnapshot,
+            warn = { code -> AppEvents.add(code, LogLevel.WARNING) },
+        )
     }
 
     private fun updateProtection() {

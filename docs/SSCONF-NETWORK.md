@@ -1,5 +1,25 @@
 # SSConf network scope
 
+`SSConfFetch.kt` (`fetchSSConf(context, source)`) is the only production consumer
+of `withSSConfNetwork` and `SSConfNetworkLease`; no other app code may use them.
+It performs one bounded request with no retry (5 s bind, 5 s capture, 15 s Core
+resolve), must be called off Main, and maps failures only to the fixed codes
+`SSCONF_NETWORK_UNAVAILABLE` (acquisition failure, or a resolve cancelled by lease
+invalidation) and `SSCONF_FETCH_FAILED` (any other request/resolve error). Source,
+body and lease diagnostics never enter exception messages, `VpnState` or the journal.
+
+The VPN service uses it only when an SSConf profile has no usable persisted snapshot.
+A persisted snapshot that Core accepts is reused without network access and is never
+refetched automatically (not on connect, reconnect, network change or recovery). A
+persisted snapshot that Core rejects is discarded and replaced by one fetch. A fetched
+body is validated by Core before `ProfileStore.commitSnapshot`; a rejected body fails
+with `SSCONF_SNAPSHOT_INVALID` and is not committed. A commit conflict fails the attempt
+with `PROFILE_CHANGED`; an I/O failure to persist continues with the validated in-memory
+snapshot and records `SNAPSHOT_NOT_PERSISTED` in the journal at WARNING. All of this
+happens before the native cleanup gate, capability check and TUN; the session is then
+created with `Androidcore.newSessionWithSSConfSnapshot`. The decision logic is
+`resolveSessionSnapshot` (JVM tests: `SSConfSessionSnapshotTest`).
+
 `withSSConfNetwork(context, block)` requires existing VPN consent and binds the
 private same-UID service without starting a VPN session. Acquisition waits at
 most five seconds for binding. The non-suspending block runs on IO. Create the
@@ -24,7 +44,6 @@ Instrumentation runs only on a CI emulator or a dedicated, isolated test device
 with an idle VPN service and a physical network with IPv4 DNS. No test starts a
 Session, establishes a TUN, opens consent UI, or loads a profile. Synthetic
 onRevoke is a lifecycle signal, not proof of actual permission revocation.
-Native resolver integration is not implemented yet.
 
 Callback capabilities and link properties establish the initial snapshot with a
 five-second cancellable wait. Subsequent callbacks update validity synchronously;
