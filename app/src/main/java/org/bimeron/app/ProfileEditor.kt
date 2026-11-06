@@ -136,6 +136,7 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
         }
     }
     BackHandler { back() }
+    SSConfRefreshConsentHost(model.ssconfRefresh)
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     Column(Modifier.widthIn(max = 600.dp).fillMaxSize().imePadding().padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -181,6 +182,7 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
                     } else EditorHint(stringResource(R.string.editor_source_hint))
                     if (SsConfForms.supported(doc) || SsConfForms.protected(doc)) SsConfSettings(draft, !locked)
                     else ProtocolSettings(draft, !locked)
+                    SSConfRefreshSection(model, draft, !locked)
                     if (doc.value("AccessKey", "Type").equals("SSH", ignoreCase = true)) {
                         SshKeyImportButtons(draft, !locked && !draft.rawInvalid, model.store.resources,
                             onStaged = { kind, token -> model.editorDraft === draft && draft.importKey(kind, token) },
