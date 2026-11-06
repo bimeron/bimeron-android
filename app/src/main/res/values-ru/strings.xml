@@ -98,7 +98,8 @@
     <string name="ssconf_refresh_in_progress">Обновление подписки…</string>
     <string name="ssconf_refresh_hint">Повторно загружает сохранённую подписку SSConf. VPN не запускается.</string>
     <string name="ssconf_refresh_save_first">Сохраните или отмените изменения, чтобы обновить сохранённую подписку.</string>
-    <string name="ssconf_refresh_done">Подписка обновлена. Она будет использована при следующем подключении.</string>
+    <string name="ssconf_refresh_done">Подписка обновлена. Она будет использована для следующего подключения.</string>
+    <string name="ssconf_refresh_already_updated">Подписка уже обновлена более новым запросом.</string>
     <string name="ssconf_refresh_not_saved">Подписка обновлена, но не сохранена. Попробуйте снова.</string>
     <string name="ssconf_refresh_profile_changed">Профиль изменился во время обновления. Попробуйте снова.</string>
     <string name="ssconf_refresh_invalid_profile">В этом профиле нет действительной подписки SSConf.</string>

@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.coroutines.CoroutineContext
@@ -42,8 +43,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.dropWhile
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,6 +50,11 @@ import kotlinx.coroutines.withContext
 /** Fixed outcome of an explicit SSConf refresh. User-visible text comes only from [messageRes]. */
 internal enum class SSConfRefreshResult(@StringRes val messageRes: Int, val success: Boolean) {
     REFRESHED(R.string.ssconf_refresh_done, true),
+    /**
+     * The store already holds a snapshot from a newer read (SUPERSEDED, e.g. a connection start fetched
+     * one meanwhile). Not an error, and not offered for reconnect: that newer snapshot is the current one.
+     */
+    ALREADY_UPDATED(R.string.ssconf_refresh_already_updated, true),
     NOT_SAVED(R.string.ssconf_refresh_not_saved, false),
     PROFILE_CHANGED(R.string.ssconf_refresh_profile_changed, false),
     INVALID_PROFILE(R.string.ssconf_refresh_invalid_profile, false),
@@ -107,6 +111,8 @@ internal class SSConfRefreshCoordinator(
     class ConsentRequest internal constructor(val profileId: String) {
         internal val answer = CompletableDeferred<Boolean>()
         @Volatile internal var launched = false
+        /** Set once the host was paused after the launch, i.e. the consent activity was in front. */
+        @Volatile internal var pausedAfterLaunch = false
     }
 
     private val lock = Any()
@@ -119,8 +125,15 @@ internal class SSConfRefreshCoordinator(
 
     private fun current(profileId: String, generation: Long) = synchronized(lock) { generations[profileId] == generation }
 
+    /** Every in-flight refresh, for any profile, becomes stale. */
+    private fun bumpAll() = generations.keys.toList().forEach { generations[it] = generations.getValue(it) + 1 }
+
     fun refresh(profileId: String): Job {
-        val mine = synchronized(lock) { ((generations[profileId] ?: 0L) + 1).also { generations[profileId] = it } }
+        // A refresh of any profile supersedes the running one, so every outstanding ticket turns stale.
+        val mine = synchronized(lock) {
+            bumpAll()
+            (generations[profileId] ?: 1L).also { generations[profileId] = it }
+        }
         job?.cancel()
         mutableState.value = SSConfRefreshState.Running(profileId)
         // Lazy start: `job` is assigned before the body can run, even on an immediate dispatcher.
@@ -143,7 +156,7 @@ internal class SSConfRefreshCoordinator(
 
     /** Ends the current refresh, including a pending consent request, and clears the result. */
     fun cancel() {
-        synchronized(lock) { generations.keys.toList().forEach { generations[it] = generations.getValue(it) + 1 } }
+        synchronized(lock) { bumpAll() }
         job?.cancel()
         job = null
         mutableState.value = SSConfRefreshState.Idle
@@ -159,6 +172,21 @@ internal class SSConfRefreshCoordinator(
     /** Resolves a launched consent request. RESULT_OK resumes only that refresh. */
     fun answerConsent(granted: Boolean, request: ConsentRequest? = mutableConsent.value) {
         if (request != null && request.launched) request.answer.complete(granted)
+    }
+
+    /** Host lifecycle: the activity paused while [request] was launched. */
+    fun consentPaused(request: ConsentRequest) {
+        if (request.launched) request.pausedAfterLaunch = true
+    }
+
+    /**
+     * Host lifecycle: the activity resumed. A result is always delivered before the resume that follows the
+     * consent activity, so a launched request that was paused and is still open lost its result (for example
+     * across an activity recreation) and ends as not granted instead of hanging. A resume without a prior
+     * pause (before the consent activity appeared) does nothing.
+     */
+    fun consentResumed(request: ConsentRequest) {
+        if (request.launched && request.pausedAfterLaunch) request.answer.complete(false)
     }
 
     private suspend fun awaitConsent(profileId: String): Boolean {
@@ -227,7 +255,9 @@ internal class SSConfRefreshCoordinator(
             }
             // The service would reload from disk, so a reconnect would not use this body.
             SnapshotCommitResult.NotPersisted -> SSConfRefreshResult.NOT_SAVED
-            is SnapshotCommitResult.Conflict -> SSConfRefreshResult.PROFILE_CHANGED
+            is SnapshotCommitResult.Conflict ->
+                if (committed.reason == ConflictReason.SUPERSEDED) SSConfRefreshResult.ALREADY_UPDATED
+                else SSConfRefreshResult.PROFILE_CHANGED
         }
     }
 }
@@ -242,8 +272,8 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
  * Hosts the refresh-only VPN consent launcher. It is separate from the activity's connect permission
  * launcher and never touches `pendingPermissionId` or `VpnLive`. Leaving the host (other than through an
  * activity recreation) cancels the refresh. After a recreation the launcher's saved key receives the
- * pending result; if no result arrives by the time the activity is resumed again, the request ends as
- * not granted instead of hanging.
+ * pending result. The lost-result fallback is armed only by a pause observed after the launch (recorded in
+ * the coordinator, so it survives recreation); see [SSConfRefreshCoordinator.consentResumed].
  */
 @Composable internal fun SSConfRefreshConsentHost(refresh: SSConfRefreshCoordinator) {
     val context = LocalContext.current
@@ -268,10 +298,19 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
                 return@LaunchedEffect
             }
         }
-        // The consent activity pauses this one; a result is delivered before the next resume.
-        lifecycle.currentStateFlow.dropWhile { it.isAtLeast(Lifecycle.State.RESUMED) }
-            .first { it.isAtLeast(Lifecycle.State.RESUMED) }
-        refresh.answerConsent(false, pending)
+    }
+    // Registered after the launcher, so a result pending across recreation is delivered first.
+    DisposableEffect(lifecycle, refresh) {
+        val observer = LifecycleEventObserver { _, event ->
+            val pending = refresh.consent.value ?: return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> refresh.consentPaused(pending)
+                Lifecycle.Event.ON_RESUME -> refresh.consentResumed(pending)
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
     }
     val activity = remember(context) { context.findActivity() }
     DisposableEffect(refresh) {
@@ -281,7 +320,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 
 /** "Refresh subscription" for a stored SSConf profile. Uses the stored source, so a dirty draft disables it. */
 @Composable internal fun SSConfRefreshSection(model: AppModel, draft: EditorDraft, enabled: Boolean) {
-    val stored = remember(draft.profile.text) {
+    remember(draft.profile.text) {
         runCatching { SSConfSnapshots.sourceOf(ConfigDocument.parse(draft.profile.text)) }.getOrNull()
     } ?: return
     val state by model.ssconfRefresh.state.collectAsStateWithLifecycle()
@@ -289,7 +328,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     val running = (state as? SSConfRefreshState.Running)?.profileId == id
     val finished = (state as? SSConfRefreshState.Finished)?.takeIf { it.profileId == id }?.result
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedButton(onClick = { model.refreshSnapshot(id) }, enabled = enabled && !draft.dirty && !running && stored.isNotEmpty(),
+        OutlinedButton(onClick = { model.refreshSnapshot(id) }, enabled = enabled && !draft.dirty && !running,
             modifier = Modifier.fillMaxWidth()) {
             if (running) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)

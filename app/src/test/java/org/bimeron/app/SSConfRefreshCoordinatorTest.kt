@@ -184,12 +184,90 @@ class SSConfRefreshCoordinatorTest {
 
     @Test fun conflictReportsProfileChangedWithoutApply() = scenario {
         connected()
-        for (reason in listOf(ConflictReason.SOURCE_CHANGED, ConflictReason.DELETED, ConflictReason.SUPERSEDED)) {
+        for (reason in listOf(ConflictReason.SOURCE_CHANGED, ConflictReason.DELETED, ConflictReason.STALE_TICKET)) {
             commitResult = { SnapshotCommitResult.Conflict(reason) }
             refresh.refresh(profileId).join()
             assertEquals(SSConfRefreshResult.PROFILE_CHANGED, result())
             assertNull(operations.pendingApply.value)
         }
+    }
+
+    @Test fun supersededCommitIsAlreadyUpdatedWithoutApply() = scenario {
+        connected()
+        commitResult = { SnapshotCommitResult.Conflict(ConflictReason.SUPERSEDED) }
+        refresh.refresh(profileId).join()
+        assertEquals(SSConfRefreshResult.ALREADY_UPDATED, result())
+        assertTrue(SSConfRefreshResult.ALREADY_UPDATED.success)
+        assertNull(operations.pendingApply.value)
+    }
+
+    @Test fun refreshOfAnotherProfileMakesEveryOutstandingTicketStale() = scenario {
+        val entered = CompletableDeferred<Unit>()
+        fetchHook = { entered.complete(Unit); awaitCancellation() }
+        val first = refresh.refresh(profileId)
+        entered.await()
+        val firstTicket = tickets.single()
+        fetchHook = { "other".toByteArray() }
+        val other = UUID.randomUUID().toString()
+        val second = refresh.refresh(other)
+        assertFalse(firstTicket.stillValid())
+        first.join(); second.join()
+        assertTrue(first.isCancelled)
+        assertEquals(1, commits.size)
+        assertEquals(UUID.fromString(other), commits.single().first.profileId)
+        assertEquals(SSConfRefreshState.Finished(other, SSConfRefreshResult.REFRESHED), refresh.state.value)
+    }
+
+    private suspend fun Fixture.launchedConsent(): Pair<Job, SSConfRefreshCoordinator.ConsentRequest> {
+        needsConsent = true
+        val job = refresh.refresh(profileId)
+        val request = refresh.consent.filterNotNull().first()
+        assertTrue(refresh.markLaunched(request))
+        return job to request
+    }
+
+    @Test fun consentResumeBeforeAnyPauseDoesNotDeny() = scenario {
+        val (job, request) = launchedConsent()
+        // The activity may still be resumed right after launch, before the consent activity appears.
+        refresh.consentResumed(request)
+        yield()
+        assertTrue(job.isActive)
+        refresh.answerConsent(true)
+        job.join()
+        assertEquals(SSConfRefreshResult.REFRESHED, result())
+    }
+
+    @Test fun consentLostResultEndsAsNotGrantedOnResumeAfterPause() = scenario {
+        val (job, request) = launchedConsent()
+        refresh.consentPaused(request)
+        // E.g. a recreated activity resumes without the result having been delivered.
+        refresh.consentResumed(request)
+        job.join()
+        assertEquals(SSConfRefreshResult.CONSENT_REQUIRED, result())
+        assertTrue(fetched.isEmpty())
+    }
+
+    @Test fun consentResultDeliveredBeforeResumeWins() = scenario {
+        val (job, request) = launchedConsent()
+        refresh.consentPaused(request)
+        refresh.answerConsent(true)
+        refresh.consentResumed(request)
+        job.join()
+        assertEquals(SSConfRefreshResult.REFRESHED, result())
+    }
+
+    @Test fun pauseBeforeLaunchDoesNotArmFallback() = scenario {
+        needsConsent = true
+        val job = refresh.refresh(profileId)
+        val request = refresh.consent.filterNotNull().first()
+        refresh.consentPaused(request)
+        assertTrue(refresh.markLaunched(request))
+        refresh.consentResumed(request)
+        yield()
+        assertTrue(job.isActive)
+        refresh.answerConsent(false)
+        job.join()
+        assertEquals(SSConfRefreshResult.CONSENT_REQUIRED, result())
     }
 
     @Test fun validateFailureIsSnapshotInvalidAndNotCommitted() = scenario {
@@ -316,7 +394,8 @@ class SSConfRefreshCoordinatorTest {
     @Test fun everyResultHasItsOwnMessage() {
         val messages = SSConfRefreshResult.entries.map { it.messageRes }
         assertEquals(messages.size, messages.toSet().size)
-        assertEquals(listOf(SSConfRefreshResult.REFRESHED), SSConfRefreshResult.entries.filter { it.success })
+        assertEquals(listOf(SSConfRefreshResult.REFRESHED, SSConfRefreshResult.ALREADY_UPDATED),
+            SSConfRefreshResult.entries.filter { it.success })
     }
 
 }

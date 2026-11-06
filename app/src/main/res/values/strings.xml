@@ -99,7 +99,8 @@
     <string name="ssconf_refresh_in_progress">Refreshing subscription…</string>
     <string name="ssconf_refresh_hint">Downloads the saved SSConf subscription again. The VPN is not started.</string>
     <string name="ssconf_refresh_save_first">Save or discard your changes to refresh the saved subscription.</string>
-    <string name="ssconf_refresh_done">Subscription refreshed. It is used from the next connection.</string>
+    <string name="ssconf_refresh_done">Subscription refreshed. It will be used for the next connection.</string>
+    <string name="ssconf_refresh_already_updated">The subscription was already updated by a newer refresh.</string>
     <string name="ssconf_refresh_not_saved">The subscription was refreshed but not saved. Try again.</string>
     <string name="ssconf_refresh_profile_changed">The profile changed during the refresh. Try again.</string>
     <string name="ssconf_refresh_invalid_profile">This profile has no valid SSConf subscription.</string>
