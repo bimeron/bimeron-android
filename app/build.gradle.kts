@@ -81,6 +81,10 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // Android 13+ per-app language settings: AGP writes res/xml/_generated_res_locale_config.xml from the
+    // app's locale-qualified resource dirs (values/ = en via resources.properties, values-ru/ = ru) and
+    // references it as android:localeConfig in the merged manifest. LocaleConfigTest pins the list.
+    androidResources { generateLocaleConfig = true }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
         // Keep libgojni.so stored uncompressed and 16 KiB page-aligned in the APK (zipalign -P 16).
