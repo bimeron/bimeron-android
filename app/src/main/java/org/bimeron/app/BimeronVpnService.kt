@@ -167,7 +167,7 @@ class BimeronVpnService : VpnService() {
                 is Command.Invalid -> {
                     acceptedStartId = command.startId
                     if (runJob == null) {
-                        if (command.reportError) VpnLive.publish(VpnState("failed", message = getString(R.string.invalid_profile)), VpnLive.gate.next())
+                        if (command.reportError) VpnLive.publish(failureState(VpnErrorCode.INVALID_PROFILE), VpnLive.gate.next())
                         leaveForeground(command.startId)
                     }
                 }
@@ -181,14 +181,13 @@ class BimeronVpnService : VpnService() {
                     if (destroyed) return
                     runJob = null
                     if (cleanupFailed) {
-                        VpnLive.publish(VpnState("failed", message = getString(R.string.core_error),
-                            attemptProfileId = command.id), token)
+                        VpnLive.publish(failureState(VpnErrorCode.CLEANUP_BLOCKED, command.id), token)
                         leaveForeground(command.startId)
                         continue
                     }
                     ensureForeground()
                     if (!persistRecovery(command.id)) {
-                        VpnLive.publish(VpnState("failed", message = getString(R.string.vpn_start_error), attemptProfileId = command.id), token)
+                        VpnLive.publish(failureState(VpnErrorCode.RECOVERY_STATE_FAILED, command.id), token)
                         leaveForeground(command.startId)
                         continue
                     }
@@ -200,7 +199,7 @@ class BimeronVpnService : VpnService() {
                 is Command.Stop -> {
                     val token = VpnLive.gate.next()
                     val old = VpnLive.state.value
-                    if (runJob != null) VpnLive.publish(old.copy(state = "stopping"), token)
+                    if (runJob != null) VpnLive.publish(old.copy(state = "stopping", message = null, code = null), token)
                     runJob?.cancelAndJoin()
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
@@ -208,9 +207,8 @@ class BimeronVpnService : VpnService() {
                     val recoveryCleared = persistRecovery(null)
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
-                    VpnLive.publish(if (cleanupFailed || !recoveryCleared)
-                        VpnState("failed", message = getString(R.string.core_error),
-                            attemptProfileId = old.attemptProfileId) else VpnState(), token)
+                    val failure = teardownFailureCode(cleanupFailed, recoveryCleared, old.code)
+                    VpnLive.publish(failure?.let { failureState(it, old.attemptProfileId) } ?: VpnState(), token)
                     leaveForeground(command.startId)
                 }
                 is Command.Finished -> {
@@ -219,15 +217,24 @@ class BimeronVpnService : VpnService() {
                     val recoveryCleared = persistRecovery(null)
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
-                    if (cleanupFailed || !recoveryCleared) {
-                        VpnLive.publish(VpnState("failed", message = getString(R.string.core_error),
-                            attemptProfileId = VpnLive.state.value.attemptProfileId), command.token)
+                    val current = VpnLive.state.value
+                    val failure = teardownFailureCode(cleanupFailed, recoveryCleared, current.code)
+                    if (failure != null) {
+                        VpnLive.publish(failureState(failure, current.attemptProfileId), command.token)
                     } else if (VpnLive.state.value.state != "failed") VpnLive.publish(VpnState(), command.token)
                     leaveForeground(acceptedStartId)
                 }
             }
         }
     }
+
+    private fun failureState(code: VpnErrorCode, id: String? = null) = failureState(code, { getString(it) }, id)
+
+    private fun publishFailure(code: VpnErrorCode, id: String, token: Long) =
+        VpnLive.publishFailure(code, getString(code.messageRes), id, token)
+
+    /** A session failure with a fixed code; carries no exception or Core text. */
+    private class SessionFailure(val code: VpnErrorCode) : Exception()
 
     private suspend fun persistRecovery(id: String?): Boolean = withContext(Dispatchers.IO) {
         val saved = getSharedPreferences(RECOVERY, MODE_PRIVATE).edit().putString(ACTIVE_ID, id).commit()
@@ -274,12 +281,21 @@ class BimeronVpnService : VpnService() {
                 ?.filter { address -> address.address.size == 4 }
                 ?.take(4)?.joinToString(",") { address -> address.hostAddress ?: "" } }.orEmpty()
             try { current.setNetwork(network?.toString().orEmpty(), dns) }
-            catch (_: Exception) { VpnLive.publish(VpnState("failed", message = getString(R.string.network_error), attemptProfileId = id), token) }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { publishFailure(VpnErrorCode.NETWORK_ERROR, id, token) }
         }
         val packetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val ownerJob = currentCoroutineContext()[Job]
         try {
-            val bytes = java.io.File(filesDir, "profiles/$id.conf").readBytes()
+            // Single store-backed read; the input owns its bytes, revision, digest and ticket.
+            val sessionInput = try {
+                val store = withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }
+                readSessionInput(store, id, token)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                throw SessionFailure(VpnErrorCode.INVALID_PROFILE)
+            }
             val protector = object : SocketProtector {
                 override fun protect(fd: Long): Boolean {
                     if (fd < 0 || fd > Int.MAX_VALUE) return false
@@ -293,10 +309,12 @@ class BimeronVpnService : VpnService() {
                     } catch (_: Exception) { false }
                 }
             }
-            check(NativeCleanupGate.acquire()) { "Native cleanup is unconfirmed" }
+            ensureSessionAttempt(token)
+            if (!NativeCleanupGate.acquire()) throw SessionFailure(VpnErrorCode.CLEANUP_BLOCKED)
             ownsNative = true
-            if (!CoreCapabilities.read().canStartVpn) throw ProfileError(getString(R.string.core_vpn_incompatible))
-            current = Androidcore.newSession(bytes, protector)
+            if (!CoreCapabilities.read().canStartVpn) throw SessionFailure(VpnErrorCode.CORE_INCOMPATIBLE)
+            ensureSessionAttempt(token)
+            current = Androidcore.newSession(sessionInput.bytes, protector)
             val session = current
             val watcher = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) = updateNetwork(session, token)
@@ -306,16 +324,16 @@ class BimeronVpnService : VpnService() {
             callback = watcher
             connectivity.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), watcher)
             updateNetwork(session, token)
-            if (synchronized(networkLock) { physical == null }) throw ProfileError(getString(R.string.no_network))
+            if (synchronized(networkLock) { physical == null }) throw SessionFailure(VpnErrorCode.NO_NETWORK)
             tun = Builder().setSession(getString(R.string.app_name)).setMtu(session.mtu().toInt())
                 .addAddress("198.18.0.1", 24).addRoute("0.0.0.0", 0)
                 .addAddress("fdfe:524c::1", 128).addRoute("::", 0)
-                .addDnsServer("198.18.0.2").establish() ?: throw ProfileError(getString(R.string.tun_error))
+                .addDnsServer("198.18.0.2").establish() ?: throw SessionFailure(VpnErrorCode.TUN_FAILED)
             session.start()
             while (currentCoroutineContext().isActive) {
                 val state = publishStatus(session, id, token)
                 if (state == "connected") break
-                if (state == "failed" || state == "disconnected") throw ProfileError(getString(R.string.core_error))
+                if (state == "failed" || state == "disconnected") throw SessionFailure(VpnErrorCode.CORE_CONNECT_FAILED)
                 delay(200)
             }
             currentCoroutineContext().ensureActive()
@@ -329,9 +347,11 @@ class BimeronVpnService : VpnService() {
                         if (count < 0) throw java.io.EOFException("TUN closed")
                         if (count > 0) session.writePacket(buffer.copyOf(count))
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     if (!closing.get()) {
-                        VpnLive.publish(VpnState("failed", message = getString(R.string.packet_error), attemptProfileId = id), token)
+                        publishFailure(VpnErrorCode.PACKET_IO, id, token)
                         ownerJob?.cancel()
                     }
                 }
@@ -340,24 +360,26 @@ class BimeronVpnService : VpnService() {
                 try {
                     val stream = FileOutputStream(descriptor.fileDescriptor)
                     while (isActive) { val packet = session.readPacket(500); if (packet != null) stream.write(packet) }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     if (!closing.get()) {
-                        VpnLive.publish(VpnState("failed", message = getString(R.string.packet_error), attemptProfileId = id), token)
+                        publishFailure(VpnErrorCode.PACKET_IO, id, token)
                         ownerJob?.cancel()
                     }
                 }
             }
             while (currentCoroutineContext().isActive) {
                 val state = publishStatus(session, id, token)
-                if (state == "failed" || state == "disconnected") break
+                if (state == "failed" || state == "disconnected") throw SessionFailure(VpnErrorCode.CORE_CONNECT_FAILED)
                 delay(500)
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: ProfileError) {
-            VpnLive.publish(VpnState("failed", message = e.text(this@BimeronVpnService), attemptProfileId = id), token)
+        } catch (e: SessionFailure) {
+            publishFailure(e.code, id, token)
         } catch (_: Exception) {
-            VpnLive.publish(VpnState("failed", message = getString(R.string.vpn_start_error), attemptProfileId = id), token)
+            publishFailure(VpnErrorCode.START_FAILED, id, token)
         } finally {
             withContext(NonCancellable + Dispatchers.IO) {
                 synchronized(networkLock) { closing.set(true); physical = null }
@@ -384,14 +406,11 @@ class BimeronVpnService : VpnService() {
         val state = normalizeCoreState(status.optString("State"))
         val stats = json.optJSONObject("stats")?.takeUnless { it.optBoolean("unavailable") }
         val lastError = status.optString("LastError").takeIf { it.isNotBlank() }
-        val safeError = when {
-            lastError?.contains("network", ignoreCase = true) == true -> getString(R.string.network_error)
-            state == "failed" || state == "reconnecting" -> getString(R.string.core_error)
-            else -> null
-        }
+        val code = coreFailureCode(state, lastError)
+        val safeError = code?.let { getString(it.messageRes) }
         return VpnLive.publishCoreStatus(token, id, state,
             stats?.optLong("bytes_down") ?: 0, stats?.optLong("bytes_up") ?: 0,
-            SystemClock.elapsedRealtime(), safeError)
+            SystemClock.elapsedRealtime(), safeError, code)
     }
 
     override fun onRevoke() {
@@ -405,7 +424,7 @@ class BimeronVpnService : VpnService() {
         invalidateResolvers(SSConfDiagnostic.SERVICE_DESTROYED)
         scope.cancel()
         if (started) {
-            VpnLive.serviceDestroyed(getString(R.string.vpn_stop_error))
+            VpnLive.serviceDestroyed(getString(VpnErrorCode.STOP_FAILED.messageRes))
             VpnLive.protection.value = null
         }
         super.onDestroy()
