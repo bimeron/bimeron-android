@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -44,6 +45,14 @@ class BimeronVpnService : VpnService() {
         const val FORCE_RESTART = "force_restart"
         private const val RECOVERY = "vpn_recovery"
         private const val ACTIVE_ID = "active_id"
+
+        /**
+         * Notification tap target. SINGLE_TOP + CLEAR_TOP bring the running MainActivity forward (onNewIntent)
+         * instead of stacking a second instance with its own auth dialog; nothing reads extras from it.
+         */
+        internal fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     private sealed interface Command {
@@ -148,7 +157,7 @@ class BimeronVpnService : VpnService() {
     }
 
     private fun notification(): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = openAppIntent(this)
         return NotificationCompat.Builder(this, "vpn")
             .setSmallIcon(R.drawable.ic_stat_bimeron)
             .setContentTitle(getString(R.string.app_name))

@@ -173,28 +173,11 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
     val theme by model.theme.collectAsStateWithLifecycle("system")
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val dark = theme == "dark" || (theme == "system" && systemDark)
-    val activity = LocalContext.current as? ComponentActivity
     val chosen = profiles.firstOrNull { it.id == selectedId }
     var page by rememberSaveable { mutableStateOf(Page.CONNECTION) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var addChoice by rememberSaveable { mutableStateOf(false) }
-    MaterialTheme(colorScheme = if (dark) darkScheme else lightScheme) {
-        SideEffect {
-            activity?.window?.let { window ->
-                window.statusBarColor = if (dark) android.graphics.Color.rgb(32, 38, 48) else android.graphics.Color.rgb(242, 244, 247)
-                window.navigationBarColor = if (dark) android.graphics.Color.rgb(32, 38, 48) else android.graphics.Color.rgb(242, 244, 247)
-                WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = !dark
-                WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = !dark
-            }
-        }
-        // Root host: the auth dialog is its own window over any page, the loading screen included.
-        VpnAuthHost()
-        if (loading) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-                AndroidView(factory = { context -> ImageView(context).apply { contentDescription = context.getString(R.string.bimeron_loading_accessibility); setImageResource(R.drawable.bimeron_loading_animation); if (ValueAnimator.areAnimatorsEnabled()) (drawable as? android.graphics.drawable.AnimationDrawable)?.start() else (drawable as? android.graphics.drawable.AnimationDrawable)?.selectDrawable(0) } }, modifier = Modifier.size(200.dp))
-            }
-            return@MaterialTheme
-        }
+    AppShell(dark, loading) {
         val wide = LocalConfiguration.current.screenWidthDp >= 600
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
         Row(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -252,6 +235,35 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
 }
 
 /**
+ * App root around every page: theme, system bars, the SSH auth host and the loading screen.
+ * The auth host sits above the loading branch so a pending prompt is shown even while profiles load
+ * (pinned by AppShellAuthHostTest).
+ */
+@Composable
+internal fun AppShell(dark: Boolean, loading: Boolean, content: @Composable () -> Unit) {
+    val activity = LocalContext.current as? ComponentActivity
+    MaterialTheme(colorScheme = if (dark) darkScheme else lightScheme) {
+        SideEffect {
+            activity?.window?.let { window ->
+                window.statusBarColor = if (dark) android.graphics.Color.rgb(32, 38, 48) else android.graphics.Color.rgb(242, 244, 247)
+                window.navigationBarColor = if (dark) android.graphics.Color.rgb(32, 38, 48) else android.graphics.Color.rgb(242, 244, 247)
+                WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = !dark
+                WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = !dark
+            }
+        }
+        // Root host: the auth dialog is its own window over any page, the loading screen included.
+        VpnAuthHost()
+        if (loading) {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
+                AndroidView(factory = { context -> ImageView(context).apply { contentDescription = context.getString(R.string.bimeron_loading_accessibility); setImageResource(R.drawable.bimeron_loading_animation); if (ValueAnimator.areAnimatorsEnabled()) (drawable as? android.graphics.drawable.AnimationDrawable)?.start() else (drawable as? android.graphics.drawable.AnimationDrawable)?.selectDrawable(0) } }, modifier = Modifier.size(200.dp))
+            }
+            return@MaterialTheme
+        }
+        content()
+    }
+}
+
+/**
  * Hosts the SSH interactive-auth dialog for the single pending [AuthOffer] (contract §5.5).
  * One controller per (token, sessionId); the reply and cancel callbacks are remembered under the same key,
  * so they always carry the token of the offer that created the controller, never a newer one.
@@ -259,7 +271,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
  */
 @Composable
 internal fun VpnAuthHost(offers: StateFlow<AuthOffer?> = VpnLive.auth) {
-    val offer by offers.collectAsState()
+    val offer by offers.collectAsStateWithLifecycle()
     val current = offer
     val key = current?.let { it.token to it.sessionId }
     val reply = remember(key) { authReply(current?.token) }
