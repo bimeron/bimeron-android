@@ -3,6 +3,8 @@
     <string name="app_name">Bimeron</string>
     <string name="vpn_notification_channel">Bimeron VPN</string>
     <string name="vpn_notification_text">Connection active</string>
+    <string name="vpn_recovery_notification_channel">VPN reconnect</string>
+    <string name="vpn_recovery_notification_text">Tap to reconnect</string>
     <string name="core_error">The core could not establish a connection</string>
     <string name="connection">Connection</string>
     <string name="profiles">Profiles</string>

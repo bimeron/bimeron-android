@@ -33,7 +33,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-class EditorDraft(val profile: Profile) {
+/**
+ * [baseRevision] is the store revision [profile] was read at when the editor opened; null means the
+ * draft has no update authority and any save or delete of it conflicts. [editGeneration] advances on
+ * every text change, pending-protocol-edit toggle and undo so late results can detect a newer state.
+ */
+class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = null) {
+    var editGeneration = 0L
+        private set
     val resources = SshDraftResources(runCatching { java.util.UUID.fromString(profile.id) }.getOrElse { java.util.UUID.randomUUID() })
     fun importKey(kind: SshProfileResources.Kind, token: SshProfileResources.StagedToken): Boolean {
         if (rawInvalid) return false
@@ -57,12 +64,16 @@ class EditorDraft(val profile: Profile) {
     var rawInvalid by mutableStateOf(false)
         private set
     var validating by mutableStateOf(false)
-    var pendingProtocolEdits by mutableStateOf(false)
+    private var pendingEdits by mutableStateOf(false)
+    var pendingProtocolEdits: Boolean
+        get() = pendingEdits
+        set(value) { if (pendingEdits != value) { editGeneration++; pendingEdits = value } }
     private val history = ArrayDeque<TextFieldValue>()
     val dirty get() = source.text != profile.text || pendingProtocolEdits
     val canUndo get() = history.isNotEmpty()
     fun update(value: TextFieldValue) {
         if (value.text != source.text) {
+            editGeneration++
             history.addLast(source)
             if (history.size > 32) history.removeFirst()
             error = null
@@ -76,6 +87,7 @@ class EditorDraft(val profile: Profile) {
     fun undo() {
         if (pendingProtocolEdits || history.isEmpty()) return
         val previous = history.removeLast()
+        editGeneration++
         source = previous
         try { document = ConfigDocument.parse(previous.text); rawInvalid = false; error = null }
         catch (e: ProfileError) { rawInvalid = true; failed(e) }
@@ -84,7 +96,7 @@ class EditorDraft(val profile: Profile) {
 }
 
 @Composable fun ProfileEditor(model: AppModel, profile: Profile, busy: Boolean, saveError: String?, vpn: VpnState, onBack: () -> Unit) {
-    val draft = remember(profile.id) { model.editorDraft?.takeIf { it.profile.id == profile.id } ?: EditorDraft(profile).also { model.editorDraft = it } }
+    val draft = remember(profile.id) { model.editorDraft?.takeIf { it.profile.id == profile.id } ?: model.openEditor(profile) }
     var discard by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     var reveal by remember(profile.id) { mutableStateOf(false) }
@@ -109,13 +121,17 @@ class EditorDraft(val profile: Profile) {
         draft.error = null
         model.clearError()
         val text = draft.source.text
+        val generation = draft.editGeneration
+        // A result for a replaced or further-edited draft must not close the editor or replace its message.
+        fun current() = model.editorDraft === draft && draft.editGeneration == generation
         scope.launch {
             try {
                 model.store.validate(text, draft.resources)
+                if (!current()) return@launch
                 if (save) model.save(text, profile.id, context.getString(R.string.editor_saved), draft.configurationChanged()) { leave() }
                 else draft.error = context.getString(R.string.editor_validated)
-            } catch (e: ProfileError) { draft.error = if (protected) context.getString(R.string.protocol_form_failed) else e.text(context) }
-            catch (_: Exception) { draft.error = context.getString(R.string.editor_validation_failed) }
+            } catch (e: ProfileError) { if (current()) draft.error = if (protected) context.getString(R.string.protocol_form_failed) else e.text(context) }
+            catch (_: Exception) { if (current()) draft.error = context.getString(R.string.editor_validation_failed) }
             finally { draft.validating = false }
         }
     }
@@ -134,7 +150,7 @@ class EditorDraft(val profile: Profile) {
             }
         }
         val message = draft.error ?: draft.parseError?.text(context) ?: saveError
-        if (message != null) Text(if (!protected || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+        if (message != null) Text(if (!protected || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_deleted_elsewhere) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
         if (locked) LinearProgressIndicator(Modifier.fillMaxWidth())
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             val doc = draft.document

@@ -6,6 +6,7 @@
     <string name="journal_profile_deleted">Профиль удалён</string>
     <string name="journal_vpn_permission_denied">Разрешение VPN отклонено</string>
     <string name="journal_recovery_save_failed">Не удалось сохранить состояние восстановления VPN</string>
+    <string name="journal_recovery_needs_user">VPN не восстановлен автоматически: профилю может потребоваться вход</string>
     <string name="journal_vpn_connecting">Подключение VPN начато</string>
     <string name="journal_vpn_connected">VPN подключён</string>
     <string name="journal_vpn_reconnecting">VPN переподключается</string>
