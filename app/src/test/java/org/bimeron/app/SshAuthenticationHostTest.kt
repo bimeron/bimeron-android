@@ -164,4 +164,19 @@ class SshAuthenticationHostTest {
         compose.onNodeWithText(title).assertExists()
         assertEquals(0, answerLength())
     }
+
+    @Test fun endpointResultsPlugInAsAcceptedComparison() {
+        // The MainActivity wiring shape: with no registered attempt the endpoint answers STALE, i.e. not accepted.
+        wire = wire()
+        compose.setContent {
+            MaterialTheme {
+                SshAuthenticationHost(key, wire,
+                    reply = { s, r, w -> VpnAuthEndpoint.reply(1L, s, r, w) == AuthResult.ACCEPTED },
+                    cancel = { s, r -> VpnAuthEndpoint.cancel(1L, s, r) == AuthResult.ACCEPTED })
+            }
+        }
+        compose.onNodeWithText(context.getString(R.string.ssh_reply)).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText(failedHint).assertExists()
+    }
 }
