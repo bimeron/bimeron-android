@@ -1,0 +1,24 @@
+<resources>
+    <string name="vpn_error_permission_denied">Разрешение на VPN не предоставлено.</string>
+    <string name="vpn_error_invalid_profile">Профиль повреждён или недоступен.</string>
+    <string name="vpn_error_profile_changed">Профиль изменился. Подключитесь снова.</string>
+    <string name="vpn_error_cleanup_blocked">Очистка VPN не завершена. Перезапустите приложение.</string>
+    <string name="vpn_error_recovery_state_failed">Не удалось сохранить состояние восстановления VPN.</string>
+    <string name="vpn_error_core_incompatible">Ядро VPN несовместимо.</string>
+    <string name="vpn_error_no_network">Нет доступной сети с интернетом.</string>
+    <string name="vpn_error_network_error">Произошла ошибка сети.</string>
+    <string name="vpn_error_tun_failed">Не удалось создать интерфейс VPN.</string>
+    <string name="vpn_error_packet_io">Ошибка передачи пакетов VPN.</string>
+    <string name="vpn_error_core_connect_failed">Не удалось подключить VPN.</string>
+    <string name="vpn_error_ssh_connection_failed">Ошибка подключения SSH или проверки ключа сервера.</string>
+    <string name="vpn_error_auth_failed">Ошибка аутентификации SSH.</string>
+    <string name="vpn_error_auth_unanswered">Запрос аутентификации SSH истёк или был отозван.</string>
+    <string name="vpn_error_auth_cancelled">Аутентификация SSH отменена.</string>
+    <string name="vpn_error_recovery_needs_user">Откройте приложение для повторного подключения.</string>
+    <string name="vpn_error_ssconf_network_unavailable">Нет доступной сети для SSConf.</string>
+    <string name="vpn_error_ssconf_fetch_failed">Не удалось загрузить SSConf.</string>
+    <string name="vpn_error_ssconf_snapshot_invalid">Снимок SSConf недействителен.</string>
+    <string name="vpn_error_ssconf_consent_required">Для обновления SSConf требуется разрешение на VPN.</string>
+    <string name="vpn_error_start_failed">Не удалось запустить VPN.</string>
+    <string name="vpn_error_stop_failed">VPN неожиданно остановлен.</string>
+</resources>
