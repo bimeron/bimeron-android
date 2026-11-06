@@ -2,6 +2,7 @@ package org.bimeron.app
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.util.Log
 import java.util.UUID
 
 /**
@@ -29,16 +30,36 @@ internal suspend fun ProfileStore.createFixture(text: String): Profile {
 }
 
 /**
- * Deletes every stored profile named one of [names] through compare-and-delete with the revision
- * from [ProfileStore.load], including duplicates left behind by aborted runs, and fails loudly if
- * any remain. A conflict (another writer changed the file meanwhile) is retried with a fresh load.
+ * Deletes every stored profile whose name equals one of [names] exactly, through compare-and-delete
+ * with the revision from [ProfileStore.load]. Matching is by exact name, not by id, because UI tests
+ * locate rows by name: any leftover with that name, including duplicates from aborted runs whose ids
+ * are unknown, would make those lookups ambiguous. Fails loudly if any remain. A conflict (another
+ * writer changed the file meanwhile) is logged and retried with a fresh load.
  */
 internal suspend fun ProfileStore.deleteFixturesNamed(vararg names: String) {
     repeat(3) {
         val leftovers = load().first.filter { it.name in names }
         if (leftovers.isEmpty()) return
-        leftovers.forEach { compareAndDelete(UUID.randomUUID(), UUID.fromString(it.id), it.revision) }
+        leftovers.forEach {
+            val result = compareAndDelete(UUID.randomUUID(), UUID.fromString(it.id), it.revision)
+            if (result !is CommitResult.Committed) Log.w("TestFixtures", "delete of '${it.name}' ${it.id} not committed: $result")
+        }
     }
     val remaining = load().first.filter { it.name in names }
     check(remaining.isEmpty()) { "fixtures were not deleted: ${remaining.map { it.name to it.id }}" }
+}
+
+/**
+ * Runs [body], then [cleanup]. If [body] fails, a cleanup failure is added to its exception as
+ * suppressed instead of replacing it; a cleanup failure is thrown only when [body] succeeded.
+ */
+internal inline fun <T> runThenCleanUp(body: () -> T, cleanup: () -> Unit): T {
+    val result = try {
+        body()
+    } catch (failure: Throwable) {
+        try { cleanup() } catch (cleanupFailure: Throwable) { failure.addSuppressed(cleanupFailure) }
+        throw failure
+    }
+    cleanup()
+    return result
 }

@@ -13,8 +13,10 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
@@ -31,7 +33,7 @@ class ProfileHoverTest {
         val store = ProfileStore.get(app)
         // An aborted earlier run can leave fixtures, even duplicates, whose rows make this test ambiguous.
         store.deleteFixturesNamed(*FIXTURE_NAMES)
-        try {
+        runThenCleanUp<Unit>({
             val selectedProfile = store.createFixture(Conf.fromKey("Selection fixture", "socks5://192.0.2.24:1080"))
             val profile = store.createFixture(Conf.fromKey("Hover fixture", "socks5://192.0.2.25:1080"))
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -41,9 +43,11 @@ class ProfileHoverTest {
                 withTimeout(10_000) { model.profiles.first { items -> items.any { it.id == profile.id } && items.any { it.id == selectedProfile.id } } }
                 // The initial load also resolves the saved selection; read it only once that load is done.
                 withTimeout(10_000) { model.loading.first { !it } }
-                val originalSelection = model.selected.value
-                try {
-                    model.select(selectedProfile.id)
+                // A fixture id here is a leftover selection, not one worth restoring.
+                val originalSelection = model.selected.value?.takeUnless { it == selectedProfile.id || it == profile.id }
+                runThenCleanUp({
+                    // select() writes Main-owned state of the live activity's model.
+                    withContext(Dispatchers.Main) { model.select(selectedProfile.id) }
                     withTimeout(10_000) { model.selected.first { it == selectedProfile.id } }
                     val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
                     // Resolved from the current app locale (CI applies "ru"), so the test works in any locale.
@@ -147,14 +151,14 @@ class ProfileHoverTest {
                         assertEquals(sample(selectedBefore, selectedSettingsPoint, selectedSettings), sample(selectedAfter, selectedSettingsPoint, selectedSettings))
                         saveScreenshot(app, selectedAfter, "hover-selected-${targetPoint.x}.png")
                     }
-                } finally {
+                }) {
                     if (originalSelection != null && model.profiles.value.any { it.id == originalSelection }) {
-                        model.select(originalSelection)
+                        withContext(Dispatchers.Main) { model.select(originalSelection) }
                         withTimeout(10_000) { model.selected.first { it == originalSelection } }
                     }
                 }
             }
-        } finally {
+        }) {
             store.deleteFixturesNamed(*FIXTURE_NAMES)
         }
     }
