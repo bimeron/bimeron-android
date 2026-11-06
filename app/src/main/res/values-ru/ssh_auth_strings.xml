@@ -4,6 +4,7 @@
     <string name="ssh_cancel">Отмена</string>
     <string name="ssh_import_identity">Импортировать закрытый ключ SSH</string>
     <string name="ssh_import_known_hosts">Импортировать known_hosts</string>
+    <string name="ssh_auth_reply_failed">Ответ не принят.</string>
     <string name="ssh_auth_error">Не удалось завершить аутентификацию SSH.</string>
     <string name="ssh_import_error">Не удалось импортировать файл SSH.</string>
 </resources>

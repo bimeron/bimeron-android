@@ -4,6 +4,7 @@
     <string name="ssh_cancel">Cancel</string>
     <string name="ssh_import_identity">Import SSH private key</string>
     <string name="ssh_import_known_hosts">Import known_hosts</string>
+    <string name="ssh_auth_reply_failed">The response was not accepted.</string>
     <string name="ssh_auth_error">Could not complete SSH authentication.</string>
     <string name="ssh_import_error">Could not import the SSH file.</string>
 </resources>
