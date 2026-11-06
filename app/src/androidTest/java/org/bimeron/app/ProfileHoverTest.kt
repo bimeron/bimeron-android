@@ -2,6 +2,8 @@ package org.bimeron.app
 
 import android.graphics.Rect
 import android.graphics.Bitmap
+import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -35,11 +37,14 @@ class ProfileHoverTest {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
                 // Resolved from the current app locale (CI applies "ru"), so the test works in any locale.
-                val expand = waitForText(app.getString(R.string.expand))
-                assertTrue(expand.ancestor { it.isClickable }.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                // On short screens or with large fonts the toggle can start below the visible page.
+                waitFor("scrollable page") { it.isScrollable }
+                val expand = revealText(app.getString(R.string.expand))
+                assertTrue(expand.ancestor("Expand toggle") { it.isClickable }.performAction(AccessibilityNodeInfo.ACTION_CLICK))
                 val settingsLabel = app.getString(R.string.configure_profile, profile.name)
-                // The unselected fixture row only exists once the list is expanded; wait for its layout to settle.
-                val geometry = stableRow(profile.name, settingsLabel)
+                // The unselected fixture row only exists once the list is expanded. Bring it fully on screen
+                // first, then measure it once its layout has settled.
+                val geometry = showRow(profile.name, settingsLabel)
                 val rect = geometry.row
                 val settings = geometry.settings
                 var screen = Rect()
@@ -74,7 +79,7 @@ class ProfileHoverTest {
                 val baseRight = sample(before, settingsPoint, settings)
 
                 // The baseline and the hover point are only meaningful for the row as measured.
-                assertEquals("Profile row moved after it was measured", geometry, rowGeometry(profile.name, settingsLabel))
+                assertEquals("Profile row moved after it was measured", geometry, readableRow(profile.name, settingsLabel))
                 hover(rect.centerX(), rect.centerY())
                 val deadline = android.os.SystemClock.uptimeMillis() + 5_000
                 var overBody = ui.takeScreenshot()
@@ -96,7 +101,7 @@ class ProfileHoverTest {
                 assertEquals(sample(overBody, settingsPoint, settings), sample(overSettings, settingsPoint, settings))
                 saveScreenshot(app, overSettings, "hover-settings.png")
 
-                val selectedGeometry = stableRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name))
+                val selectedGeometry = showRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name))
                 assertTrue("Selection fixture row is not checked", selectedGeometry.checked)
                 val selectedRect = selectedGeometry.row
                 val selectedSettings = selectedGeometry.settings
@@ -139,13 +144,19 @@ class ProfileHoverTest {
 
     private fun root() = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow
 
+    private fun hasText(value: String): (AccessibilityNodeInfo) -> Boolean = { it.text?.toString() == value }
+
     /** Waits without touching the UI: scrolling here would move rows between measurement and hover. */
-    private fun waitForText(value: String): AccessibilityNodeInfo {
-        repeat(200) {
-            find(root()) { it.text?.toString() == value }?.let { return it }
+    private fun waitForText(value: String) = waitFor(value, predicate = hasText(value))
+
+    private fun waitFor(what: String, timeoutMs: Long = 20_000, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (true) {
+            find(root(), predicate)?.let { return it }
+            if (SystemClock.uptimeMillis() >= deadline) break
             Thread.sleep(100)
         }
-        error("Element not found: $value; window: ${root()?.packageName}; text: ${allText(root())}")
+        error("Element not found within ${timeoutMs}ms: $what; window: ${root()?.packageName}; text: ${allText(root())}")
     }
 
     private fun allText(node: AccessibilityNodeInfo?): String {
@@ -156,39 +167,195 @@ class ProfileHoverTest {
         }
     }
 
-    private fun AccessibilityNodeInfo.ancestor(predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
+    private fun AccessibilityNodeInfo.ancestor(what: String = "Profile row", predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
         var node: AccessibilityNodeInfo? = this
         while (node != null) { if (predicate(node)) return node; node = node.parent }
-        error("Profile row not found")
+        error("$what not found above '$text'")
     }
 
-    private data class RowGeometry(val row: Rect, val settings: Rect, val checked: Boolean)
+    private fun AccessibilityNodeInfo.can(action: AccessibilityNodeInfo.AccessibilityAction) = refresh() && actionList.any { it.id == action.id }
 
-    /** One fresh read of a profile row and its settings action, or null while it is not fully laid out. */
-    private fun rowGeometry(name: String, settingsLabel: String): RowGeometry? {
-        val root = root() ?: return null
-        val text = find(root) { it.text?.toString() == name } ?: return null
-        val row = runCatching { text.ancestor { it.isCheckable } }.getOrNull()?.takeIf { it.refresh() } ?: return null
-        val settings = find(root) { it.contentDescription?.toString() == settingsLabel } ?: return null
-        if (!row.isVisibleToUser || !settings.isVisibleToUser) return null
+    /** Layout of every node on screen (bounds and child count), used to detect that a scroll has finished. */
+    private fun snapshot(node: AccessibilityNodeInfo?): String {
+        if (node == null || !node.refresh()) return ""
+        return buildString {
+            append(bounds(node)).append('/').append(node.childCount).append(';')
+            for (i in 0 until node.childCount) append(snapshot(node.getChild(i)))
+        }
+    }
+
+    /** Waits until two consecutive fresh reads of the whole window agree, e.g. after a deliberate scroll. */
+    private fun awaitStill(timeoutMs: Long = 5_000) {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        var previous = snapshot(root())
+        while (SystemClock.uptimeMillis() < deadline) {
+            Thread.sleep(100)
+            val current = snapshot(root())
+            if (current == previous) return
+            previous = current
+        }
+        error("Window did not stop changing within ${timeoutMs}ms")
+    }
+
+    /**
+     * Returns the node with [value], scrolling the page deliberately if it is not in the tree.
+     * Compose leaves fully clipped nodes out of the accessibility tree, so an off-screen node cannot be
+     * found by waiting. This runs before any measurement, and every scroll is followed by a settle wait.
+     */
+    private fun revealText(value: String): AccessibilityNodeInfo {
+        // Let the previous action (launch, expand click) finish laying out before deciding to scroll.
+        awaitStill()
+        find(root(), hasText(value))?.let { return it }
+        val page = find(root()) { it.isScrollable } ?: return waitForText(value)
+        for (direction in listOf(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD, AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)) {
+            for (step in 1..10) {
+                if (!page.can(direction) || !page.performAction(direction.id)) break
+                awaitStill()
+                Log.i("HoverVisibility", "scrolled page ${direction.label ?: direction.id} looking for '$value'")
+                find(root(), hasText(value))?.let { return it }
+            }
+        }
+        return waitForText(value)
+    }
+
+    /** [content] is the union of the row's text, which the row centres vertically between equal paddings. */
+    private data class RowGeometry(val row: Rect, val settings: Rect, val content: Rect, val checked: Boolean)
+
+    private sealed interface RowRead {
+        data class Read(val geometry: RowGeometry) : RowRead
+        data class Unreadable(val reason: String) : RowRead
+    }
+
+    private fun textBounds(node: AccessibilityNodeInfo, into: Rect) {
+        if (!node.refresh()) return
+        if (!node.text.isNullOrEmpty()) bounds(node).takeUnless { it.isEmpty }?.let { into.union(it) }
+        for (i in 0 until node.childCount) node.getChild(i)?.let { textBounds(it, into) }
+    }
+
+    /** One fresh read of a profile row and its settings action, or the reason it is not fully laid out. */
+    private fun rowGeometry(name: String, settingsLabel: String): RowRead {
+        val root = root() ?: return RowRead.Unreadable("no active window")
+        val text = find(root, hasText(name)) ?: return RowRead.Unreadable("name not in tree")
+        val row = runCatching { text.ancestor { it.isCheckable } }.getOrNull()?.takeIf { it.refresh() }
+            ?: return RowRead.Unreadable("no checkable row above the name")
+        val settings = find(root) { it.contentDescription?.toString() == settingsLabel }
+            ?: return RowRead.Unreadable("settings action not in tree")
+        if (!row.isVisibleToUser) return RowRead.Unreadable("row not visible to user")
+        if (!settings.isVisibleToUser) return RowRead.Unreadable("settings action not visible to user")
         val rowBounds = bounds(row)
         val settingsBounds = bounds(settings)
+        val content = Rect().also { textBounds(row, it) }
+        if (rowBounds.isEmpty || settingsBounds.isEmpty) return RowRead.Unreadable("empty bounds: row=$rowBounds settings=$settingsBounds")
         // Both halves of one rendered row share its vertical span; anything else is a mid-layout read.
-        if (rowBounds.isEmpty || settingsBounds.isEmpty || rowBounds.top != settingsBounds.top ||
-            rowBounds.bottom != settingsBounds.bottom || settingsBounds.left < rowBounds.right) return null
-        return RowGeometry(rowBounds, settingsBounds, row.isChecked)
+        if (rowBounds.top != settingsBounds.top || rowBounds.bottom != settingsBounds.bottom) {
+            return RowRead.Unreadable("row and settings span different heights: row=$rowBounds settings=$settingsBounds")
+        }
+        // The settings action sits beside the row body, on either side depending on layout direction.
+        if (settingsBounds.left < rowBounds.right && rowBounds.left < settingsBounds.right) {
+            return RowRead.Unreadable("settings overlaps the row horizontally: row=$rowBounds settings=$settingsBounds")
+        }
+        if (content.isEmpty || !rowBounds.contains(content)) return RowRead.Unreadable("row text $content not inside row $rowBounds")
+        return RowRead.Read(RowGeometry(rowBounds, settingsBounds, content, row.isChecked))
+    }
+
+    /** A fresh read that tolerates brief unreadable moments, for comparing against a settled measurement. */
+    private fun readableRow(name: String, settingsLabel: String): RowGeometry {
+        val deadline = SystemClock.uptimeMillis() + 2_000
+        while (true) {
+            when (val read = rowGeometry(name, settingsLabel)) {
+                is RowRead.Read -> return read.geometry
+                is RowRead.Unreadable -> if (SystemClock.uptimeMillis() >= deadline) error("Profile row unreadable before hover: $name: ${read.reason}")
+            }
+            Thread.sleep(100)
+        }
     }
 
     /** Waits until two consecutive fresh reads of the row agree, so the layout has settled. */
-    private fun stableRow(name: String, settingsLabel: String): RowGeometry {
+    private fun stableRow(name: String, settingsLabel: String, timeoutMs: Long = 10_000): RowGeometry {
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
         var previous: RowGeometry? = null
-        repeat(100) {
+        var last: RowRead? = null
+        while (true) {
             val current = rowGeometry(name, settingsLabel)
-            if (current != null && current == previous) return current
-            previous = current
+            last = current
+            val geometry = (current as? RowRead.Read)?.geometry
+            if (geometry != null && geometry == previous) return geometry
+            previous = geometry
+            if (SystemClock.uptimeMillis() >= deadline) break
             Thread.sleep(100)
         }
-        error("Profile row did not settle: $name; last=$previous; text: ${allText(root())}")
+        val why = when (last) {
+            is RowRead.Unreadable -> last.reason
+            is RowRead.Read -> "still moving, last=${last.geometry}"
+            null -> "never read"
+        }
+        error("Profile row did not settle within ${timeoutMs}ms: $name: $why; text: ${allText(root())}")
+    }
+
+    /**
+     * Null when the row is drawn in full; otherwise which edge a scrollable ancestor clips. Reported
+     * bounds are already clipped, and a shown row often sits exactly on the viewport edge, so comparing
+     * against the viewport cannot tell the two apart. The row centres its text between equal vertical
+     * paddings, so clipping shows up as unequal gaps above and below the text.
+     */
+    private fun clippedEdge(geometry: RowGeometry): String? {
+        val tolerance = maxOf(2, InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density.toInt() * 2)
+        val above = geometry.content.top - geometry.row.top
+        val below = geometry.row.bottom - geometry.content.bottom
+        return when {
+            above + tolerance < below -> "top"
+            below + tolerance < above -> "bottom"
+            else -> null
+        }
+    }
+
+    private fun AccessibilityNodeInfo.scrollableAncestor(): AccessibilityNodeInfo? {
+        var node = parent
+        while (node != null && !(node.refresh() && node.isScrollable)) node = node.parent
+        return node
+    }
+
+    /**
+     * Asks Compose to show the row. Compose handles ACTION_SHOW_ON_SCREEN by scrolling only the nearest
+     * scrollable ancestor of the node that receives it, so a request on the row alone scrolls just the
+     * profile list, never the page around it. The request therefore goes to every ancestor, outermost
+     * first, so each nested scrollable is positioned before the one inside it, and to the row last.
+     */
+    private fun showOnScreen(row: AccessibilityNodeInfo): String {
+        val chain = generateSequence(row) { it.parent }.toList().asReversed()
+        val action = AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id
+        return chain.count { it.refresh() && it.performAction(action) }.let { "$it of ${chain.size}" }
+    }
+
+    /**
+     * Brings a profile row fully on screen, then measures it once it has settled. Scrolling is a
+     * deliberate step here, never part of a wait: [stableRow] and the "row moved" check catch any
+     * movement between this measurement and the hover.
+     */
+    private fun showRow(name: String, settingsLabel: String): RowGeometry {
+        var geometry: RowGeometry? = null
+        repeat(4) { attempt ->
+            val row = revealText(name).ancestor { it.isCheckable }
+            val clipped = geometry?.let(::clippedEdge)
+            if (clipped == null) {
+                Log.i("HoverVisibility", "'$name' show-on-screen performed=[${showOnScreen(row)}]")
+            } else {
+                // Fallback: scroll the nearest scrollable ancestor that can move towards the clipped edge.
+                val direction = if (clipped == "top") AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD
+                else AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD
+                var scrollable = row.scrollableAncestor()
+                while (scrollable != null && !scrollable.can(direction)) scrollable = scrollable.scrollableAncestor()
+                val scrolled = scrollable?.performAction(direction.id) ?: false
+                Log.i("HoverVisibility", "'$name' clipped at $clipped; fallback scroll ${direction.id} on ${scrollable?.let(::bounds)} performed=$scrolled")
+            }
+            awaitStill()
+            val settled = stableRow(name, settingsLabel)
+            geometry = settled
+            val edge = clippedEdge(settled)
+            Log.i("HoverVisibility", "'$name' attempt=$attempt settled at $settled clipped=${edge ?: "no"}")
+            if (edge == null) return settled
+        }
+        error("Profile row is still clipped at the ${geometry?.let(::clippedEdge)} after scrolling: $name: $geometry")
     }
 
     private fun hover(x: Int, y: Int) {
