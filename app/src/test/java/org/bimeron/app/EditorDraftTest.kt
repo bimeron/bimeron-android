@@ -31,6 +31,32 @@ class EditorDraftTest {
         assertEquals(original, draft.source)
         assertFalse(draft.dirty)
     }
+    @Test fun editGenerationAdvancesOnTextChangesPendingTogglesAndUndoOnly() {
+        val draft = draft()
+        assertNull(draft.baseRevision)
+        var last = draft.editGeneration
+        fun advanced(): Boolean = (draft.editGeneration > last).also { last = draft.editGeneration }
+        draft.set("Profile", "Name", "Edited")
+        assertTrue(advanced())
+        draft.update(draft.source.copy(selection = TextRange(1, 3)))
+        assertFalse(advanced())
+        draft.tab = 2
+        assertFalse(advanced())
+        draft.pendingProtocolEdits = true
+        assertTrue(advanced())
+        draft.pendingProtocolEdits = true
+        assertFalse(advanced())
+        draft.undo()
+        assertFalse("undo is blocked while protocol edits are pending", advanced())
+        draft.pendingProtocolEdits = false
+        assertTrue(advanced())
+        draft.undo()
+        assertTrue(advanced())
+        draft.undo()
+        assertFalse("empty history", advanced())
+        val pinned = EditorDraft(draft.profile, ProfileRevision(1, 2))
+        assertEquals(ProfileRevision(1, 2), pinned.baseRevision)
+    }
     @Test fun invalidRawKeepsLastDocumentAndCanBeUndone() {
         val draft = draft()
         val previous = draft.source
