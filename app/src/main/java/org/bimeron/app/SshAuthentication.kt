@@ -8,6 +8,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.res.stringResource
@@ -16,16 +19,26 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.window.DialogProperties
 
-/** Host serializes feed/reply/cancel on Main, polls every 250ms while started, and invalidates on stop.
+/** Host serializes feed/reply/cancel on Main and invalidates on stop.
  * Create one controller per SSH session; never reuse across sessions or recreation. At most eight requests
  * are admitted; retired IDs remain protected until disposal. Host must protect the window with FLAG_SECURE.
+ * A submitted request stays visible until the next feed replaces or withdraws it: busy after an accepted reply,
+ * [replyRejected] after a rejected one. After a rejection only Cancel is offered; otherwise only the next prompt
+ * or Core's own per-prompt timeout moves the attempt forward. A rejected cancel keeps the request visible with
+ * [cancelFailed]; a second Cancel then only closes the dialog locally.
  */
 internal class SshAuthenticationController {
     class Request(val sessionId: String, val requestId: String, val kind: String, val prompts: List<String>)
     var request by mutableStateOf<Request?>(null); private set
     var answers by mutableStateOf<List<String>>(emptyList()); private set
     var busy by mutableStateOf(false); private set
-    var failed by mutableStateOf(false); private set
+    /** The last reply was not accepted. Shown on the spent request and carried over to the next request only. */
+    var replyRejected by mutableStateOf(false); private set
+    /** The last cancel was not accepted. Never carried over to another request. */
+    var cancelFailed by mutableStateOf(false); private set
+    private var spent by mutableStateOf<Request?>(null)
+    /** True only while the visible request has not been submitted yet and nothing is in flight. */
+    val canSubmit: Boolean get() = request.let { it != null && it !== spent } && !busy && !disposed
     private var disposed = false
     private var sessionId: String? = null
     private val consumed = mutableSetOf<Pair<String, String>>()
@@ -41,10 +54,12 @@ internal class SshAuthenticationController {
             if (next.kind == old.kind && next.prompts == old.prompts) return
             // An immutable request changing under the same IDs is invalid.
             consumed.add(old.sessionId to old.requestId)
-            clear(); failed = true; return
+            clear(); return
         }
         if (old != null) consumed.add(old.sessionId to old.requestId)
-        clear()
+        // A reply rejection stays visible as a hint on the next request; a withdrawal clears it.
+        val keepRejected = replyRejected && next != null
+        clear(); replyRejected = keepRejected
         if (next != null && consumed.size < 8) {
             sessionId = next.sessionId
             request = next
@@ -52,34 +67,45 @@ internal class SshAuthenticationController {
         }
     }
     fun answer(index: Int, value: String) {
-        if (disposed || busy || request == null || index !in answers.indices) return
+        if (!canSubmit || index !in answers.indices) return
         val updated = answers.toMutableList().also { it[index] = value }
         if (updated.all { validUnicode(it) && it.toByteArray(Charsets.UTF_8).size <= 4096 } &&
             updated.sumOf { it.toByteArray(Charsets.UTF_8).size } <= 16384) answers = updated
     }
-    suspend fun submit(expected: Request? = request, reply: suspend (String, String, String) -> Unit) {
+    /** [reply] returns true only when the host accepted the answers. Anything else marks the request failed. */
+    suspend fun submit(expected: Request? = request, reply: suspend (String, String, String) -> Boolean) {
         val current = expected ?: return
-        if (request !== current || busy || disposed) return
-        busy = true
+        if (request !== current || !canSubmit) return
+        busy = true; replyRejected = false; spent = current
         consumed.add(current.sessionId to current.requestId)
         val wire = answers.joinToString(prefix = "[", postfix = "]") { quote(it) }
         answers = emptyList()
-        try { reply(current.sessionId, current.requestId, wire) }
-        catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (_: Exception) { if (request === current) failed = true }
-        finally { if (request === current) { request = null; busy = false } }
+        val accepted = try { reply(current.sessionId, current.requestId, wire) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { false }
+        // A completion for a replaced request or a disposed controller is dropped.
+        if (request !== current || disposed) return
+        // Accepted: stay busy until the next feed. Rejected: show the hint and allow only cancel.
+        if (!accepted) { busy = false; replyRejected = true }
     }
-    suspend fun cancel(expected: Request? = request, cancel: suspend (String, String) -> Unit) {
+    /** [cancel] returns true only when the host accepted the cancellation. After a rejected cancel the next
+     * call closes the dialog locally without calling the host again. */
+    suspend fun cancel(expected: Request? = request, cancel: suspend (String, String) -> Boolean) {
         val current = expected ?: return
         if (request !== current || busy || disposed) return
         consumed.add(current.sessionId to current.requestId)
-        clear()
-        try { cancel(current.sessionId, current.requestId) }
-        catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (_: Exception) { if (request == null && !disposed) failed = true }
+        if (cancelFailed) { clear(); return }
+        busy = true; replyRejected = false; spent = current; answers = emptyList()
+        val accepted = try { cancel(current.sessionId, current.requestId) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { false }
+        if (request !== current || disposed) return
+        if (accepted) clear() else { busy = false; cancelFailed = true }
     }
     fun dispose() { disposed = true; clear(); consumed.clear() }
-    private fun clear() { request = null; answers = emptyList(); busy = false; failed = false }
+    private fun clear() {
+        request = null; answers = emptyList(); busy = false; replyRejected = false; cancelFailed = false; spent = null
+    }
 
     companion object {
         internal fun parse(wire: String?): Request? {
@@ -162,16 +188,39 @@ private class AuthJson(private val source: String) {
     }
 }
 
+/**
+ * Shows the SSH interactive-auth dialog for the attempt identified by [key] (for example token to sessionId).
+ * A new [key] gets a fresh controller; the old one is disposed and its in-flight work is cancelled, so a late
+ * result can only touch the disposed controller. [wire] is the exact pendingAuth payload; null or "null" hides
+ * the dialog. [reply] and [cancel] return true only when the host accepted the call. Nothing is saved to a Bundle.
+ */
+@Composable
+internal fun SshAuthenticationHost(
+    key: Any?,
+    wire: String?,
+    reply: suspend (sessionId: String, requestId: String, answersWire: String) -> Boolean,
+    cancel: suspend (sessionId: String, requestId: String) -> Boolean,
+) {
+    if (key == null) return
+    androidx.compose.runtime.key(key) {
+        val controller = remember { SshAuthenticationController() }
+        LaunchedEffect(wire) { controller.feed(wire) }
+        SshAuthenticationDialog(controller, reply, cancel)
+    }
+}
+
 @Suppress("DEPRECATION")
 @Composable
 internal fun SshAuthenticationDialog(
     controller: SshAuthenticationController,
-    reply: suspend (String, String, String) -> Unit,
-    cancel: suspend (String, String) -> Unit,
+    reply: suspend (String, String, String) -> Boolean,
+    cancel: suspend (String, String) -> Boolean,
 ) {
     val scope = rememberCoroutineScope()
     DisposableEffect(controller) { onDispose { controller.dispose() } }
     val current = controller.request ?: return
+    // Dismissing (back, outside tap) cancels the request. It is ignored only while a reply or cancel is in flight
+    // or an accepted reply waits for the next feed; a second dismiss after a rejected cancel closes locally.
     val dismiss = { scope.launch { controller.cancel(current, cancel) }; Unit }
     // Block clipboard reads/writes and selection copy for every answer, including echo=true.
     val clipboard = remember { object : ClipboardManager {
@@ -184,16 +233,22 @@ internal fun SshAuthenticationDialog(
             properties = DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
             title = { Text(stringResource(R.string.ssh_auth_title)) },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+                val hint = when {
+                    controller.cancelFailed -> R.string.ssh_auth_cancel_failed
+                    controller.replyRejected -> R.string.ssh_auth_reply_failed
+                    else -> null
+                }
+                if (hint != null) Text(stringResource(hint), color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 current.prompts.forEachIndexed { index, prompt ->
                     OutlinedTextField(value = controller.answers.getOrElse(index) { "" },
                         onValueChange = { controller.answer(index, it) }, label = { Text(prompt) },
-                        enabled = !controller.busy, singleLine = true,
+                        enabled = controller.canSubmit, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
                 }
             } },
-            confirmButton = { TextButton(enabled = !controller.busy, onClick = { scope.launch { controller.submit(current, reply) } }) { Text(stringResource(R.string.ssh_reply)) } },
+            confirmButton = { TextButton(enabled = controller.canSubmit, onClick = { scope.launch { controller.submit(current, reply) } }) { Text(stringResource(R.string.ssh_reply)) } },
             dismissButton = { TextButton(enabled = !controller.busy, onClick = dismiss) { Text(stringResource(R.string.ssh_cancel)) } })
     }
 }
-

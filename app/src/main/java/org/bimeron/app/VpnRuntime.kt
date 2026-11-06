@@ -259,6 +259,35 @@ internal suspend fun ensureSessionAttempt(token: Long) {
     if (!VpnLive.gate.accepts(token)) throw CancellationException("Stale VPN attempt")
 }
 
+/** Fixed code published for an exception that ended a session attempt; never derived from its text. */
+internal fun sessionFailureCode(error: Exception): VpnErrorCode = when (error) {
+    is BimeronVpnService.SessionFailure -> error.code
+    is SSConfFailure -> error.code
+    else -> VpnErrorCode.START_FAILED
+}
+
+/**
+ * Native session creation order for one attempt (contract §7.2 step 3). When [snapshot] is set
+ * (an SSConf profile) it runs first, before [acquireNative], [canStartVpn] and any session factory,
+ * and the session is created only through [newSessionWithSnapshot]. Otherwise [newSession] is used.
+ * [acquireNative] records ownership of the native cleanup gate when it returns true.
+ */
+internal suspend fun <S, P : Any> createCoreSession(
+    snapshot: (suspend () -> P)?,
+    ensureAttempt: suspend () -> Unit,
+    acquireNative: () -> Boolean,
+    canStartVpn: () -> Boolean,
+    newSession: () -> S,
+    newSessionWithSnapshot: (P) -> S,
+): S {
+    val resolved = snapshot?.invoke()
+    ensureAttempt()
+    if (!acquireNative()) throw BimeronVpnService.SessionFailure(VpnErrorCode.CLEANUP_BLOCKED)
+    if (!canStartVpn()) throw BimeronVpnService.SessionFailure(VpnErrorCode.CORE_INCOMPATIBLE)
+    ensureAttempt()
+    return if (resolved != null) newSessionWithSnapshot(resolved) else newSession()
+}
+
 /** Single store-backed read of the session input, guarded before and after by the attempt token. */
 internal suspend fun readSessionInput(store: ProfileStore, id: String, token: Long): SessionInput {
     ensureSessionAttempt(token)
