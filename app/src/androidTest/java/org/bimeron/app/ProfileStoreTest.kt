@@ -38,6 +38,7 @@ class ProfileStoreTest {
             model.select(profile.id)
             withTimeout(10_000) { model.selected.first { it == profile.id } }
             val deleted = CompletableDeferred<Unit>()
+            assertNotNull(model.openStoredEditor(profile.id))
             model.delete(profile.id) { deleted.complete(Unit) }
             withTimeout(10_000) { deleted.await() }
             assertTrue(model.selected.value == null || model.profiles.value.any { it.id == model.selected.value })

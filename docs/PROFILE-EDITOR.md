@@ -32,6 +32,12 @@ Android requires `Mode=vpn` and `KillSwitch=false`. Previously imported proxy or
 
 Only a validated document replaces the private profile file: a temporary file is written and synced before atomic rename. A failed validation leaves the prior file untouched. Saving does not interrupt an active session; effective transport/routing changes offer the existing reconnect action, while renaming and formatting alone do not. Cancelling that reconnect leaves the current session running and the saved configuration applies on the next connection.
 
+## Concurrent changes
+
+Opening the editor goes through `AppModel.openEditor`, which records the store revision of the shown profile as the draft's `baseRevision` (none if the shown profile no longer equals the stored one). Done and Delete commit with `compareAndSave`/`compareAndDelete` against that base, so any change made elsewhere since opening, including A→B→A with identical bytes, is a conflict. An update or delete without a base, or for a draft whose text no longer matches the request, is a conflict too; only creating a profile commits without a base. On conflict the editor stays open with the draft and its imported SSH files and says the edits were not saved. The profile list is reloaded without touching the draft, including after changes made through another window, so closing and reopening the profile pins its latest revision. A profile deleted elsewhere stays in the editor until the user leaves it. A delete that would certainly conflict fails before an active VPN is stopped.
+
+`EditorDraft.editGeneration` advances on every text change, pending form edit toggle and undo. A validation or save result for a replaced or further-edited draft neither closes the editor nor replaces its message; a queued save for such a draft is dropped. A successful save closes the editor; the base is never advanced in place. Every commit takes a new store revision, so a draft left open after its own save conflicts on the next save until it is reopened.
+
 ## Verification
 
 Unit tests cover line preservation, disabled-rule round trips, source/destination replacement, rule priority changes, escaping, malformed input, draft undo and configuration-change detection. Device tests cover offline validation with the deployed AAR, rollback on invalid save, draft retention across Activity recreation and discard confirmation.

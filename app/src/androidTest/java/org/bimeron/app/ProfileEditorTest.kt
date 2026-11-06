@@ -37,6 +37,14 @@ class ProfileEditorTest {
         } finally { store.delete(profile.id) }
     }
 
+    /** Saves go through an editor draft opened at the stored revision and edited to [text]. */
+    private suspend fun editStored(model: AppModel, id: String, text: String) {
+        val draft = checkNotNull(model.openStoredEditor(id)) { "profile $id is not stored" }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            draft.update(androidx.compose.ui.text.input.TextFieldValue(text))
+        }
+    }
+
     @Test fun activeSaveOffersReconnectOnlyForConfigurationChanges() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val store = ProfileStore(app)
@@ -48,12 +56,15 @@ class ProfileEditorTest {
             VpnLive.state.value = VpnState("connected", activeProfileId = profile.id)
             val renamed = ConfigDocument.parse(profile.text).set("Profile", "Name", "Renamed fixture")
             val renameDone = CompletableDeferred<Unit>()
+            editStored(model, profile.id, renamed.render())
             model.save(renamed.render(), profile.id, "Renamed", false) { renameDone.complete(Unit) }
             withTimeout(10_000) { renameDone.await() }
             assertNull(model.pendingApply.value)
             assertEquals("connected", VpnLive.state.value.state)
             val changed = renamed.set("Interface", "MTU", "1400")
             val changeDone = CompletableDeferred<Unit>()
+            // A successful save does not advance the draft's base; editing again starts from a reopened draft.
+            editStored(model, profile.id, changed.render())
             model.save(changed.render(), profile.id, "Changed", true) { changeDone.complete(Unit) }
             withTimeout(10_000) { changeDone.await() }
             assertEquals(profile.id, model.pendingApply.value)

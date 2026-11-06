@@ -190,7 +190,8 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
                         Page.SETTINGS -> SettingsPage(theme, onTheme = model::setTheme, onJournal = { page = Page.JOURNAL }, onAbout = { page = Page.ABOUT })
                         Page.ABOUT -> SimplePage(stringResource(R.string.about), { page = Page.SETTINGS }) { CoreAboutCard() }
                         Page.ADD -> AddPage(model, busy, error, onBack = { page = Page.CONNECTION }) { page = Page.CONNECTION }
-                        Page.EDIT -> profiles.firstOrNull { it.id == editingId }?.let { ProfileEditor(model, it, busy, error, vpn, onBack = { page = Page.CONNECTION }) } ?: run { model.editorDraft = null; page = Page.CONNECTION }
+                        // A profile deleted elsewhere keeps its open draft until the user leaves the editor.
+                        Page.EDIT -> (profiles.firstOrNull { it.id == editingId } ?: model.editorDraft?.profile?.takeIf { it.id == editingId })?.let { ProfileEditor(model, it, busy, error, vpn, onBack = { page = Page.CONNECTION }) } ?: run { model.editorDraft = null; page = Page.CONNECTION }
                     }
                 }
                 if (page == Page.CONNECTION) TextButton(
