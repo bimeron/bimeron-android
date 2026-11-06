@@ -149,7 +149,7 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
             }
         }
         val message = draft.error ?: draft.parseError?.text(context) ?: saveError
-        if (message != null) Text(if (!protected || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+        if (message != null) Text(if (!protected || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_deleted_elsewhere) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
         if (locked) LinearProgressIndicator(Modifier.fillMaxWidth())
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             val doc = draft.document

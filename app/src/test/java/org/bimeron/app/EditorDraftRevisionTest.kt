@@ -13,6 +13,7 @@ import org.junit.rules.TemporaryFolder
 class EditorDraftRevisionTest {
     @get:Rule val temp = TemporaryFolder()
     private val conflictMessage = "#${R.string.profile_edit_conflict}"
+    private val deletedMessage = "#${R.string.profile_deleted_elsewhere}"
     private fun ss(name: String) = Conf.fromKey(name, "ss://YWVzLTEyOC1nY206cGFzcw@example.com:443")
 
     private class Gate {
@@ -285,9 +286,33 @@ class EditorDraftRevisionTest {
         gate.release.complete(Unit); refresh.join(); saving.join()
         assertEquals(1, done)
         assertTrue(store.load().first.any { it.name == "New" })
-        model.save("not a profile", null, "added") { done++ }.join()
+        // Hold the failing create in flight while the open draft is edited.
+        val failing = Gate(); commitHook = { failing.await() }
+        val invalid = model.save("not a profile", null, "added") { done++ }
+        failing.entered.await()
         draft.set("Profile", "Name", "Edited again")
-        assertNotNull("a failed create reports its error even with an editor open", model.error.value)
+        failing.release.complete(Unit); invalid.join()
+        assertNotNull("a failed create reports its error even with an edited editor open", model.error.value)
+        assertEquals(1, done)
         assertSame(draft, model.editorDraft)
+    }
+
+    @Test fun deletedElsewhereReportsDeletionAndKeepsDraft() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(id), stored(id).revision) is CommitResult.Committed)
+        draft.set("Profile", "Name", "Mine")
+        save(draft).join()
+        assertEquals(deletedMessage, model.error.value)
+        assertSame(draft, model.editorDraft)
+        assertTrue("the conflict reload drops the deleted profile", model.profiles.value.none { it.id == id })
+        // Saving again hits the pre-store check, which reports the same deletion.
+        save(draft).join()
+        assertEquals(deletedMessage, model.error.value)
+        model.delete(id) { done++ }.join()
+        assertEquals(deletedMessage, model.error.value)
+        assertEquals(0, done)
+        assertSame(draft, model.editorDraft)
+        assertTrue(store.load().first.none { it.id == id })
     }
 }

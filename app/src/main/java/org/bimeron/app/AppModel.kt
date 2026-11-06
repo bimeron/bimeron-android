@@ -310,7 +310,8 @@ internal class AppModelOperations(
             if (editorBound && !current()) return@operation
             error.value = null
             try {
-                if (id != null && profiles.value.none { it.id == id }) throw ProfileError(R.string.profile_no_longer_exists)
+                if (id != null && profiles.value.none { it.id == id })
+                    throw ProfileError(if (editorBound) R.string.profile_deleted_elsewhere else R.string.profile_no_longer_exists)
                 val publish: suspend (Profile) -> Unit = { profile -> withContext(NonCancellable) {
                     // Persistence is committed. Refresh/preferences failures must not report a failed save.
                     profiles.value = profiles.value.filterNot { it.id == profile.id } + profile
@@ -421,13 +422,13 @@ internal suspend fun publishStoreCommit(store: ProfileStore, requestId: UUID,
  * never against the revision current at save time, so A->B->A changes elsewhere are detected.
  * Updates and deletes need the editor's draft for that id, unchanged since the request, with a base
  * revision; otherwise they conflict. Only creation (id == null) commits with expected == null.
- * A conflict throws [R.string.profile_edit_conflict] and leaves the draft and its imported SSH
- * resources untouched; AppModelOperations then reloads so that reopening pins the latest revision. After a successful save the editor closes; if it stays open (stale result),
- * its base is not advanced: every commit takes a new store revision, so reusing the old base conflicts.
+ * A conflict throws [R.string.profile_edit_conflict] ([R.string.profile_deleted_elsewhere] when the
+ * profile is gone) and leaves the draft and its imported SSH resources untouched; AppModelOperations
+ * then reloads so that reopening pins the latest revision.
+ * After a successful save the editor closes; if it stays open (stale result), its base is not
+ * advanced: every commit takes a new store revision, so reusing the old base conflicts.
  * Main-thread owned.
  */
-internal val ProfileError.isEditConflict get() = resId == R.string.profile_edit_conflict
-
 internal class EditorCommits(private val store: () -> ProfileStore) {
     private val publications = ProfileReceiptPublications()
     private val stored = mutableMapOf<String, StoredProfile>()
@@ -440,7 +441,8 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
     /** The revision [profile] was loaded at, or null when the shown profile is not the stored one. */
     fun baseRevision(profile: Profile): ProfileRevision? = stored[profile.id]?.takeIf { it.profile == profile }?.revision
 
-    private fun conflict() = ProfileError(R.string.profile_edit_conflict)
+    private fun conflict(reason: ConflictReason? = null) = ProfileError(
+        if (reason == ConflictReason.DELETED) R.string.profile_deleted_elsewhere else R.string.profile_edit_conflict)
 
     /** Fails early, before the VPN is stopped, when a delete from [draft] would certainly conflict. */
     fun checkDelete(id: String, draft: EditorDraft?) { base(id, draft, null) }
@@ -459,7 +461,8 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
         val normalized = withContext(Dispatchers.IO) { resources?.resolve(text, store.resources) ?: text }
         val profile = ConfigDocument.parse(normalized).validate().copy(id = uuid.toString())
         publishStoreCommit(store, requestId, operation = {
-            if (store.compareAndSave(requestId, uuid, expected, normalized, resources) is CommitResult.Conflict) throw conflict()
+            val result = store.compareAndSave(requestId, uuid, expected, normalized, resources)
+            if (result is CommitResult.Conflict) throw conflict(result.reason)
         }) { receipt ->
             if (publications.accept(receipt, stored[profile.id]?.revision)) {
                 stored[profile.id] = StoredProfile(profile, receipt.revision!!, receipt.digest!!)
@@ -474,7 +477,8 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
         val uuid = UUID.fromString(id)
         val requestId = UUID.randomUUID()
         publishStoreCommit(store, requestId, operation = {
-            if (store.compareAndDelete(requestId, uuid, expected) is CommitResult.Conflict) throw conflict()
+            val result = store.compareAndDelete(requestId, uuid, expected)
+            if (result is CommitResult.Conflict) throw conflict(result.reason)
         }) { receipt ->
             if (publications.accept(receipt, stored[id]?.revision, expected)) {
                 stored.remove(id)
@@ -483,6 +487,9 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
         }
     }
 }
+
+internal val ProfileError.isEditConflict
+    get() = resId == R.string.profile_edit_conflict || resId == R.string.profile_deleted_elsewhere
 
 /** Keep tombstones so a late save receipt cannot resurrect a deleted profile. Main-thread owned. */
 internal class ProfileReceiptPublications {

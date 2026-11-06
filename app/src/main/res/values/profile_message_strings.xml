@@ -39,6 +39,7 @@
     <string name="profile_delete_failed">Could not delete the profile</string>
     <string name="profile_no_longer_exists">The profile no longer exists</string>
     <string name="profile_edit_conflict">The profile was changed elsewhere, so your edits were not saved. Copy any changes you need, then close and reopen the profile to edit the latest version.</string>
+    <string name="profile_deleted_elsewhere">This profile was deleted elsewhere. Your edits were not saved.</string>
     <string name="profile_delete_vpn_stop_failed">Could not disconnect VPN. The profile was not deleted</string>
     <string name="profiles_load_failed">Could not load profiles</string>
     <string name="profile_select_failed">Could not select the profile</string>
