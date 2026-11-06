@@ -68,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 
 class MainActivity : ComponentActivity() {
     private val model: AppModel by viewModels()
@@ -111,7 +112,7 @@ class MainActivity : ComponentActivity() {
         model.pendingPermissionId = null
         if (result.resultCode == RESULT_OK && id != null && model.selected.value == id && VpnLive.state.value.state == "permission") startVpn(id)
         else if (VpnLive.state.value.state == "permission") {
-            VpnLive.publish(failureState(VpnErrorCode.PERMISSION_DENIED, { getString(it) }), VpnLive.gate.next())
+            VpnLive.publish(failureState(VpnErrorCode.PERMISSION_DENIED, { getString(it) }), VpnLive.nextAttempt())
             model.log(getString(R.string.journal_vpn_permission_denied), LogLevel.WARNING)
         }
     }
@@ -125,7 +126,7 @@ class MainActivity : ComponentActivity() {
         val state = VpnLive.state.value.state
         if (state == "permission") {
             model.pendingPermissionId = null
-            VpnLive.publish(VpnState(), VpnLive.gate.next())
+            VpnLive.publish(VpnState(), VpnLive.nextAttempt())
             return
         }
         if (state in setOf("connected", "connecting", "reconnecting")) {
@@ -137,7 +138,7 @@ class MainActivity : ComponentActivity() {
         val prepared = VpnService.prepare(this)
         if (prepared != null) {
             model.pendingPermissionId = profile.id
-            VpnLive.publish(VpnState("permission", attemptProfileId = profile.id), VpnLive.gate.next())
+            VpnLive.publish(VpnState("permission", attemptProfileId = profile.id), VpnLive.nextAttempt())
             permission.launch(prepared)
         } else startVpn(profile.id)
     }
@@ -186,6 +187,8 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
                 WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightNavigationBars = !dark
             }
         }
+        // Root host: the auth dialog is its own window over any page, the loading screen included.
+        VpnAuthHost()
         if (loading) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
                 AndroidView(factory = { context -> ImageView(context).apply { contentDescription = context.getString(R.string.bimeron_loading_accessibility); setImageResource(R.drawable.bimeron_loading_animation); if (ValueAnimator.areAnimatorsEnabled()) (drawable as? android.graphics.drawable.AnimationDrawable)?.start() else (drawable as? android.graphics.drawable.AnimationDrawable)?.selectDrawable(0) } }, modifier = Modifier.size(200.dp))
@@ -246,6 +249,30 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
         }
         if (error != null && page !in setOf(Page.ADD, Page.EDIT)) AlertDialog(onDismissRequest = model::clearError, title = { Text(stringResource(R.string.vpn_failed)) }, text = { Text(error.orEmpty()) }, confirmButton = { TextButton(onClick = model::clearError) { Text("OK") } })
     }
+}
+
+/**
+ * Hosts the SSH interactive-auth dialog for the single pending [AuthOffer] (contract §5.5).
+ * One controller per (token, sessionId); the reply and cancel callbacks are remembered under the same key,
+ * so they always carry the token of the offer that created the controller, never a newer one.
+ * Nothing here is saved to a Bundle, an Intent, preferences or the journal (I4).
+ */
+@Composable
+internal fun VpnAuthHost(offers: StateFlow<AuthOffer?> = VpnLive.auth) {
+    val offer by offers.collectAsState()
+    val current = offer
+    val key = current?.let { it.token to it.sessionId }
+    val reply = remember(key) { authReply(current?.token) }
+    val cancel = remember(key) { authCancel(current?.token) }
+    SshAuthenticationHost(key = key, wire = current?.wire, reply = reply, cancel = cancel)
+}
+
+private fun authReply(token: Long?): suspend (String, String, String) -> Boolean = { s, r, w ->
+    token != null && VpnAuthEndpoint.reply(token, s, r, w) == AuthResult.ACCEPTED
+}
+
+private fun authCancel(token: Long?): suspend (String, String) -> Boolean = { s, r ->
+    token != null && VpnAuthEndpoint.cancel(token, s, r) == AuthResult.ACCEPTED
 }
 
 @Composable internal fun BottomNav(page: Page, go: (Page) -> Unit) {
