@@ -99,8 +99,8 @@ internal class SSConfRefreshCoordinator(
     private val validate: suspend (source: String, body: ByteArray) -> Unit,
     private val needsConsent: () -> Boolean,
     private val offerApply: (profileId: String) -> Boolean,
-    /** Fixed code carried by a fetch failure; null maps to SSCONF_FETCH_FAILED. */
-    private val fetchFailure: (Exception) -> VpnErrorCode? = { null },
+    /** Fixed code carried by a fetch failure ([SSConfFailure]); null maps to SSCONF_FETCH_FAILED. */
+    private val fetchFailure: (Exception) -> VpnErrorCode? = { (it as? SSConfFailure)?.code },
     private val io: CoroutineContext = Dispatchers.IO,
 ) {
     /** A pending consent request; it resolves only the refresh that created it. */

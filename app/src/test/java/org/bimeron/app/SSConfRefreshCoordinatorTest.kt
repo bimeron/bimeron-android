@@ -34,7 +34,6 @@ class SSConfRefreshCoordinatorTest {
             if (ticket.stillValid()) SnapshotCommitResult.Committed(StoredSnapshot(ByteArray(1), Sha256.of(ByteArray(1)), 0))
             else SnapshotCommitResult.Conflict(ConflictReason.STALE_TICKET)
         }
-        var fetchFailure: (Exception) -> VpnErrorCode? = { null }
         var seq = 0L
         val refresh = SSConfRefreshCoordinator(
             scope = scope,
@@ -51,7 +50,6 @@ class SSConfRefreshCoordinatorTest {
             validate = { _, body -> validated += body; validateHook(body) },
             needsConsent = { needsConsent },
             offerApply = operations::offerApply,
-            fetchFailure = { fetchFailure(it) },
             io = Dispatchers.Unconfined,
         )
         fun connected(id: String = profileId) {
@@ -216,15 +214,13 @@ class SSConfRefreshCoordinatorTest {
     }
 
     @Test fun fetchFailuresMapToFixedResults() = scenario {
-        class CodedFailure(val code: VpnErrorCode) : Exception("secret source and body text")
-        fetchFailure = { (it as? CodedFailure)?.code }
         val cases = listOf(
             VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE to SSConfRefreshResult.NETWORK_UNAVAILABLE,
             VpnErrorCode.SSCONF_FETCH_FAILED to SSConfRefreshResult.FETCH_FAILED,
             VpnErrorCode.CORE_INCOMPATIBLE to SSConfRefreshResult.CORE_INCOMPATIBLE,
         )
         for ((code, expected) in cases) {
-            fetchHook = { throw CodedFailure(code) }
+            fetchHook = { throw SSConfFailure(code) }
             refresh.refresh(profileId).join()
             assertEquals(expected, result())
         }

@@ -141,16 +141,12 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun delete(id: String, done: () -> Unit) = coordinator.delete(id, done)
     fun clearError() = coordinator.clearError()
 
-    /**
-     * Bind-only SSConf fetch for an explicit refresh. Until the shared SSConf fetch helper is available
-     * in this tree, it fails closed (reported as SSCONF_FETCH_FAILED); wiring it is a one-line change here.
-     */
-    private val ssconfFetch: suspend (String) -> ByteArray = { throw UnsupportedOperationException() }
     internal val ssconfRefresh = SSConfRefreshCoordinator(
         scope = viewModelScope,
         read = { id, stillValid -> store.readForSession(id, stillValid) },
         commit = { ticket, body -> store.commitSnapshot(ticket, body) },
-        fetch = { source -> ssconfFetch(source) },
+        // Bind-only fetch; it never starts a VPN. Failures carry only a fixed SSConfFailure code.
+        fetch = { source -> fetchSSConf(application, source) },
         validate = SSConfSnapshots::validate,
         needsConsent = { android.net.VpnService.prepare(application) != null },
         offerApply = coordinator::offerApply,
