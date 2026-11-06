@@ -39,7 +39,7 @@ class ProfilePersistenceLifecycleTest {
             }
         } finally {
             if (previousSelection != null) model.select(previousSelection).join()
-            model.delete(fixture.id) {}.join()
+            if (model.openStoredEditor(fixture.id) != null) model.delete(fixture.id) {}.join()
         }
     }
 }

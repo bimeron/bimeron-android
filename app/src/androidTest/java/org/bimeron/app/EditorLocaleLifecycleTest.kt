@@ -79,7 +79,7 @@ class EditorLocaleLifecycleTest {
                 state.phase = "wait: selection restored"
                 withTimeout(10_000) { model.selected.first { it == previousSelection } }
             }
-            model.delete(profile.id) {}.join()
+            if (model.openStoredEditor(profile.id) != null) model.delete(profile.id) {}.join()
         }
     }
     private fun waitNode(phase: String, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
