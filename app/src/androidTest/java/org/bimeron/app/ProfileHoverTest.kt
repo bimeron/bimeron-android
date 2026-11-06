@@ -8,6 +8,7 @@ import android.view.InputDevice
 import android.view.View
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -26,127 +27,140 @@ import java.io.File
 class ProfileHoverTest {
     @Test fun hoverCoversWholeUnselectedRowAndDoesNotChangeSelectedRow() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val store = ProfileStore(app)
-        val selectedProfile = store.save(Conf.fromKey("Selection fixture", "socks5://192.0.2.24:1080"))
-        val profile = store.save(Conf.fromKey("Hover fixture", "socks5://192.0.2.25:1080"))
-        val model = AppModel(app)
-        withTimeout(10_000) { model.profiles.first { items -> items.any { it.id == profile.id } } }
-        val originalSelection = model.selected.value
+        // The process-wide store that MainActivity's model also uses (contract D5: single writer).
+        val store = ProfileStore.get(app)
+        // An aborted earlier run can leave fixtures, even duplicates, whose rows make this test ambiguous.
+        store.deleteFixturesNamed(*FIXTURE_NAMES)
         try {
-            model.select(selectedProfile.id)
-            withTimeout(10_000) { model.selected.first { it == selectedProfile.id } }
+            val selectedProfile = store.createFixture(Conf.fromKey("Selection fixture", "socks5://192.0.2.24:1080"))
+            val profile = store.createFixture(Conf.fromKey("Hover fixture", "socks5://192.0.2.25:1080"))
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
-                // Resolved from the current app locale (CI applies "ru"), so the test works in any locale.
-                // On short screens or with large fonts the toggle can start below the visible page.
-                waitFor("scrollable page") { it.isScrollable }
-                val expand = revealText(app.getString(R.string.expand))
-                assertTrue(expand.ancestor("Expand toggle") { it.isClickable }.performAction(AccessibilityNodeInfo.ACTION_CLICK))
-                val settingsLabel = app.getString(R.string.configure_profile, profile.name)
-                // The unselected fixture row only exists once the list is expanded. Bring it fully on screen
-                // first, then measure it once its layout has settled.
-                val geometry = showRow(profile.name, settingsLabel)
-                val rect = geometry.row
-                val settings = geometry.settings
-                var screen = Rect()
-                var inset = 0
-                scenario.onActivity {
-                    val windowManager = it.getSystemService(android.view.WindowManager::class.java)
-                    screen = if (android.os.Build.VERSION.SDK_INT >= 30) {
-                        windowManager.maximumWindowMetrics.bounds
-                    } else {
-                        val size = android.graphics.Point()
-                        @Suppress("DEPRECATION")
-                        windowManager.defaultDisplay.getRealSize(size)
-                        Rect(0, 0, size.x, size.y)
+                var activityModel: AppModel? = null
+                scenario.onActivity { activityModel = ViewModelProvider(it)[AppModel::class.java] }
+                val model = checkNotNull(activityModel)
+                withTimeout(10_000) { model.profiles.first { items -> items.any { it.id == profile.id } && items.any { it.id == selectedProfile.id } } }
+                // The initial load also resolves the saved selection; read it only once that load is done.
+                withTimeout(10_000) { model.loading.first { !it } }
+                val originalSelection = model.selected.value
+                try {
+                    model.select(selectedProfile.id)
+                    withTimeout(10_000) { model.selected.first { it == selectedProfile.id } }
+                    val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+                    // Resolved from the current app locale (CI applies "ru"), so the test works in any locale.
+                    // On short screens or with large fonts the toggle can start below the visible page.
+                    waitFor("scrollable page") { it.isScrollable }
+                    val expand = revealText(app.getString(R.string.expand))
+                    assertTrue(expand.ancestor("Expand toggle") { it.isClickable }.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                    val settingsLabel = app.getString(R.string.configure_profile, profile.name)
+                    // The unselected fixture row only exists once the list is expanded. Bring it fully on screen
+                    // first, then measure it once its layout has settled.
+                    val geometry = showRow(profile.name, settingsLabel)
+                    val rect = geometry.row
+                    val settings = geometry.settings
+                    var screen = Rect()
+                    var inset = 0
+                    scenario.onActivity {
+                        val windowManager = it.getSystemService(android.view.WindowManager::class.java)
+                        screen = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                            windowManager.maximumWindowMetrics.bounds
+                        } else {
+                            val size = android.graphics.Point()
+                            @Suppress("DEPRECATION")
+                            windowManager.defaultDisplay.getRealSize(size)
+                            Rect(0, 0, size.x, size.y)
+                        }
+                        inset = (8 * it.resources.displayMetrics.density).toInt()
                     }
-                    inset = (8 * it.resources.displayMetrics.density).toInt()
-                }
-                val bodyPoint = bodySample(rect, inset)
-                val settingsPoint = settingsSample(settings)
-                fun sample(bitmap: Bitmap, point: android.graphics.Point, region: Rect): Int {
-                    assertTrue("Sample $point outside region $region", region.contains(point.x, point.y))
-                    assertTrue("Sample $point outside screen $screen", screen.contains(point.x, point.y))
-                    val x = ((point.x - screen.left).toDouble() * bitmap.width / screen.width()).toInt()
-                    val y = ((point.y - screen.top).toDouble() * bitmap.height / screen.height()).toInt()
-                    assertTrue("Mapped ($x,$y) outside ${bitmap.width}x${bitmap.height}",
-                        x in 0 until bitmap.width && y in 0 until bitmap.height)
-                    android.util.Log.i("HoverGeometry", "region=$region screen=$screen bitmap=${bitmap.width}x${bitmap.height} point=$point pixel=($x,$y)")
-                    return bitmap.getPixel(x, y)
-                }
-                val before = ui.takeScreenshot()
-                saveScreenshot(app, before, "hover-before.png")
-                val baseLeft = sample(before, bodyPoint, rect)
-                val baseRight = sample(before, settingsPoint, settings)
+                    val bodyPoint = bodySample(rect, inset)
+                    val settingsPoint = settingsSample(settings)
+                    fun sample(bitmap: Bitmap, point: android.graphics.Point, region: Rect): Int {
+                        assertTrue("Sample $point outside region $region", region.contains(point.x, point.y))
+                        assertTrue("Sample $point outside screen $screen", screen.contains(point.x, point.y))
+                        val x = ((point.x - screen.left).toDouble() * bitmap.width / screen.width()).toInt()
+                        val y = ((point.y - screen.top).toDouble() * bitmap.height / screen.height()).toInt()
+                        assertTrue("Mapped ($x,$y) outside ${bitmap.width}x${bitmap.height}",
+                            x in 0 until bitmap.width && y in 0 until bitmap.height)
+                        android.util.Log.i("HoverGeometry", "region=$region screen=$screen bitmap=${bitmap.width}x${bitmap.height} point=$point pixel=($x,$y)")
+                        return bitmap.getPixel(x, y)
+                    }
+                    val before = ui.takeScreenshot()
+                    saveScreenshot(app, before, "hover-before.png")
+                    val baseLeft = sample(before, bodyPoint, rect)
+                    val baseRight = sample(before, settingsPoint, settings)
 
-                // The baseline and the hover point are only meaningful for the row as measured.
-                assertEquals("Profile row moved after it was measured", geometry, readableRow(profile.name, settingsLabel))
-                hover(rect.centerX(), rect.centerY())
-                val deadline = android.os.SystemClock.uptimeMillis() + 5_000
-                var overBody = ui.takeScreenshot()
-                while ((sample(overBody, bodyPoint, rect) == baseLeft ||
-                        sample(overBody, settingsPoint, settings) == baseRight) &&
-                    android.os.SystemClock.uptimeMillis() < deadline) {
-                    overBody.recycle()
-                    Thread.sleep(50)
-                    overBody = ui.takeScreenshot()
-                }
-                saveScreenshot(app, overBody, "hover-row.png")
-                assertNotEquals("Body did not render hover within 5s", baseLeft, sample(overBody, bodyPoint, rect))
-                assertNotEquals("Settings region did not render row hover within 5s", baseRight, sample(overBody, settingsPoint, settings))
+                    // The baseline and the hover point are only meaningful for the row as measured.
+                    assertEquals("Profile row moved after it was measured", geometry, readableRow(profile.name, settingsLabel))
+                    hover(rect.centerX(), rect.centerY())
+                    val deadline = android.os.SystemClock.uptimeMillis() + 5_000
+                    var overBody = ui.takeScreenshot()
+                    while ((sample(overBody, bodyPoint, rect) == baseLeft ||
+                            sample(overBody, settingsPoint, settings) == baseRight) &&
+                        android.os.SystemClock.uptimeMillis() < deadline) {
+                        overBody.recycle()
+                        Thread.sleep(50)
+                        overBody = ui.takeScreenshot()
+                    }
+                    saveScreenshot(app, overBody, "hover-row.png")
+                    assertNotEquals("Body did not render hover within 5s", baseLeft, sample(overBody, bodyPoint, rect))
+                    assertNotEquals("Settings region did not render row hover within 5s", baseRight, sample(overBody, settingsPoint, settings))
 
-                hover(settings.centerX(), settings.centerY())
-                Thread.sleep(200)
-                val overSettings = ui.takeScreenshot()
-                assertEquals(sample(overBody, bodyPoint, rect), sample(overSettings, bodyPoint, rect))
-                assertEquals(sample(overBody, settingsPoint, settings), sample(overSettings, settingsPoint, settings))
-                saveScreenshot(app, overSettings, "hover-settings.png")
-
-                val selectedGeometry = showRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name))
-                assertTrue("Selection fixture row is not checked", selectedGeometry.checked)
-                val selectedRect = selectedGeometry.row
-                val selectedSettings = selectedGeometry.settings
-                val selectedPoint = bodySample(selectedRect, inset)
-                val selectedSettingsPoint = settingsSample(selectedSettings)
-                // The pointer still rests where the previous step left it, and showing the selected row may
-                // have scrolled that row under it; Compose re-sends hover after a layout change. Park the
-                // pointer in the page margin beside the row, outside both of its parts, so the baseline is
-                // taken without hover.
-                val selectedSpan = Rect(selectedRect).apply { union(selectedSettings) }
-                val neutral = android.graphics.Point(
-                    if (rtl()) (selectedSpan.right + screen.right) / 2 else (screen.left + selectedSpan.left) / 2,
-                    selectedRect.centerY())
-                Log.i("HoverGeometry", "neutral pointer=$neutral selectedRow=$selectedRect selectedSettings=$selectedSettings")
-                assertTrue("Neutral pointer $neutral is inside the selected row $selectedRect or its settings $selectedSettings",
-                    !selectedRect.contains(neutral.x, neutral.y) && !selectedSettings.contains(neutral.x, neutral.y) &&
-                        neutral.x !in selectedSpan.left..selectedSpan.right)
-                assertTrue("Neutral pointer $neutral outside screen $screen", screen.contains(neutral.x, neutral.y))
-                hover(neutral.x, neutral.y)
-                Thread.sleep(200)
-                val selectedBefore = ui.takeScreenshot()
-                saveScreenshot(app, selectedBefore, "hover-selected-before.png")
-                // The baseline and the hover points are only meaningful for the row as measured.
-                assertEquals("Selected profile row moved after it was measured", selectedGeometry,
-                    readableRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name)))
-                for (targetPoint in listOf(android.graphics.Point(selectedRect.centerX(), selectedRect.centerY()),
-                    android.graphics.Point(selectedSettings.centerX(), selectedSettings.centerY()))) {
-                    Log.i("HoverGeometry", "pointer=$targetPoint selectedRow=$selectedRect selectedSettings=$selectedSettings")
-                    hover(targetPoint.x, targetPoint.y)
+                    hover(settings.centerX(), settings.centerY())
                     Thread.sleep(200)
-                    val selectedAfter = ui.takeScreenshot()
-                    assertEquals(sample(selectedBefore, selectedPoint, selectedRect), sample(selectedAfter, selectedPoint, selectedRect))
-                    assertEquals(sample(selectedBefore, selectedSettingsPoint, selectedSettings), sample(selectedAfter, selectedSettingsPoint, selectedSettings))
-                    saveScreenshot(app, selectedAfter, "hover-selected-${targetPoint.x}.png")
+                    val overSettings = ui.takeScreenshot()
+                    assertEquals(sample(overBody, bodyPoint, rect), sample(overSettings, bodyPoint, rect))
+                    assertEquals(sample(overBody, settingsPoint, settings), sample(overSettings, settingsPoint, settings))
+                    saveScreenshot(app, overSettings, "hover-settings.png")
+
+                    val selectedGeometry = showRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name))
+                    assertTrue("Selection fixture row is not checked", selectedGeometry.checked)
+                    val selectedRect = selectedGeometry.row
+                    val selectedSettings = selectedGeometry.settings
+                    val selectedPoint = bodySample(selectedRect, inset)
+                    val selectedSettingsPoint = settingsSample(selectedSettings)
+                    // The pointer still rests where the previous step left it, and showing the selected row may
+                    // have scrolled that row under it; Compose re-sends hover after a layout change. Park the
+                    // pointer in the page margin beside the row, outside both of its parts, so the baseline is
+                    // taken without hover.
+                    val selectedSpan = Rect(selectedRect).apply { union(selectedSettings) }
+                    val neutral = android.graphics.Point(
+                        if (rtl()) (selectedSpan.right + screen.right) / 2 else (screen.left + selectedSpan.left) / 2,
+                        selectedRect.centerY())
+                    Log.i("HoverGeometry", "neutral pointer=$neutral selectedRow=$selectedRect selectedSettings=$selectedSettings")
+                    assertTrue("Neutral pointer $neutral is inside the selected row $selectedRect or its settings $selectedSettings",
+                        !selectedRect.contains(neutral.x, neutral.y) && !selectedSettings.contains(neutral.x, neutral.y) &&
+                            neutral.x !in selectedSpan.left..selectedSpan.right)
+                    assertTrue("Neutral pointer $neutral outside screen $screen", screen.contains(neutral.x, neutral.y))
+                    hover(neutral.x, neutral.y)
+                    Thread.sleep(200)
+                    val selectedBefore = ui.takeScreenshot()
+                    saveScreenshot(app, selectedBefore, "hover-selected-before.png")
+                    // The baseline and the hover points are only meaningful for the row as measured.
+                    assertEquals("Selected profile row moved after it was measured", selectedGeometry,
+                        readableRow(selectedProfile.name, app.getString(R.string.configure_profile, selectedProfile.name)))
+                    for (targetPoint in listOf(android.graphics.Point(selectedRect.centerX(), selectedRect.centerY()),
+                        android.graphics.Point(selectedSettings.centerX(), selectedSettings.centerY()))) {
+                        Log.i("HoverGeometry", "pointer=$targetPoint selectedRow=$selectedRect selectedSettings=$selectedSettings")
+                        hover(targetPoint.x, targetPoint.y)
+                        Thread.sleep(200)
+                        val selectedAfter = ui.takeScreenshot()
+                        assertEquals(sample(selectedBefore, selectedPoint, selectedRect), sample(selectedAfter, selectedPoint, selectedRect))
+                        assertEquals(sample(selectedBefore, selectedSettingsPoint, selectedSettings), sample(selectedAfter, selectedSettingsPoint, selectedSettings))
+                        saveScreenshot(app, selectedAfter, "hover-selected-${targetPoint.x}.png")
+                    }
+                } finally {
+                    if (originalSelection != null && model.profiles.value.any { it.id == originalSelection }) {
+                        model.select(originalSelection)
+                        withTimeout(10_000) { model.selected.first { it == originalSelection } }
+                    }
                 }
             }
         } finally {
-            if (originalSelection != null && model.profiles.value.any { it.id == originalSelection }) {
-                model.select(originalSelection)
-                withTimeout(10_000) { model.selected.first { it == originalSelection } }
-            }
-            store.delete(profile.id)
-            store.delete(selectedProfile.id)
+            store.deleteFixturesNamed(*FIXTURE_NAMES)
         }
+    }
+
+    private companion object {
+        val FIXTURE_NAMES = arrayOf("Selection fixture", "Hover fixture")
     }
 
     private fun bounds(node: AccessibilityNodeInfo) = Rect().also { node.getBoundsInScreen(it) }
