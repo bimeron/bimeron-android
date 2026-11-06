@@ -34,15 +34,13 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val storeReady = MutableStateFlow(false)
     @Volatile private var initializedStore: ProfileStore? = null
     val store: ProfileStore get() = checkNotNull(initializedStore) { "Profiles are loading" }
-    private val publications = ProfileReceiptPublications()
-    private val storedProfiles = mutableMapOf<String, StoredProfile>()
+    private val commits = EditorCommits { store }
     private suspend fun loadProfiles(): Pair<List<Profile>, Boolean> {
         val ready = withContext(Dispatchers.IO) { ProfileStore.get(getApplication()) }
         initializedStore = ready
         storeReady.value = true
         val (stored, warning) = ready.load()
-        storedProfiles.clear()
-        stored.forEach { storedProfiles[it.profile.id] = it }
+        commits.loaded(stored)
         return stored.map { it.profile } to warning
     }
     private val coordinator = AppModelOperations(
@@ -51,41 +49,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         saveProfile = { text, id -> store.save(text, id) },
         saveDraft = { text, id, draft -> store.save(text, id, (draft as? EditorDraft)?.takeIf { it.profile.id == id && it.source.text == text }?.resources) },
         deleteProfile = { store.delete(it) },
-        saveCommitted = { text, id, value, publish ->
-            val draft = (value as? EditorDraft)?.takeIf { it.profile.id == id && it.source.text == text }?.resources
-            val uuid = id?.let(UUID::fromString) ?: draft?.profileId ?: UUID.randomUUID()
-            val expected = id?.let { storedProfiles[it]?.revision ?: throw ProfileError("DELETED") }
-            val requestId = UUID.randomUUID()
-            val normalized = withContext(Dispatchers.IO) { draft?.resolve(text, store.resources) ?: text }
-            val profile = ConfigDocument.parse(normalized).validate().copy(id = uuid.toString())
-            publishStoreCommit(store, requestId, operation = {
-                when (val result = store.compareAndSave(requestId, uuid, expected, normalized, draft)) {
-                    is CommitResult.Conflict -> throw ProfileError(result.reason.name)
-                    is CommitResult.Committed -> Unit
-                }
-            }) { receipt ->
-                if (publications.accept(receipt, storedProfiles[profile.id]?.revision)) {
-                    storedProfiles[profile.id] = StoredProfile(profile, receipt.revision!!, receipt.digest!!)
-                    publish(profile)
-                }
-            }
-        },
-        deleteCommitted = { id, publish ->
-            val uuid = UUID.fromString(id)
-            val expected = storedProfiles[id]?.revision ?: throw ProfileError("DELETED")
-            val requestId = UUID.randomUUID()
-            publishStoreCommit(store, requestId, operation = {
-                when (val result = store.compareAndDelete(requestId, uuid, expected)) {
-                    is CommitResult.Conflict -> throw ProfileError(result.reason.name)
-                    is CommitResult.Committed -> Unit
-                }
-            }) { receipt ->
-                if (publications.accept(receipt, storedProfiles[id]?.revision, expected)) {
-                    storedProfiles.remove(id)
-                    publish()
-                }
-            }
-        },
+        saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
+        deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
         readSelection = { application.preferences.data.first()[selectedKey] },
         writeSelection = { id ->
             application.preferences.edit { settings ->
@@ -109,6 +74,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                 old.resources.dispose(store.resources)
             }
         }
+    /** The only production entry point for a new draft: it pins the revision the editor shows. */
+    fun openEditor(profile: Profile): EditorDraft =
+        EditorDraft(profile, commits.baseRevision(profile)).also { editorDraft = it }
     val profiles = coordinator.profiles
     val selected = coordinator.selected
     val pendingSwitch = coordinator.pendingSwitch
@@ -165,14 +133,26 @@ internal class AppModelOperations(
     private val log: (String) -> Unit,
     private val saveDraft: (suspend (String, String?, Any?) -> Profile)? = null,
     private val saveCommitted: (suspend (String, String?, Any?, suspend (Profile) -> Unit) -> Unit)? = null,
-    private val deleteCommitted: (suspend (String, suspend () -> Unit) -> Unit)? = null,
+    private val deleteCommitted: (suspend (String, Any?, suspend () -> Unit) -> Unit)? = null,
     private val journal: (String, LogLevel) -> Unit = { message, _ -> log(message) },
     // Resolves user-visible string resources; the default (resource id) serves plain JVM tests.
     private val strings: (Int, Array<out Any>) -> String = { id, _ -> "#$id" },
 ) {
     private fun resource(id: Int) = strings(id, emptyArray())
 
+    // Bumped on every replacement so a draft set again later is still a different editor session.
+    private var draftSession = 0L
     var editorDraft: Any? = null
+        set(value) { if (field !== value) draftSession++; field = value }
+    /**
+     * True while the editor state captured when an operation was requested is still shown: same draft
+     * object, same session and no further edits. Only then may a result close it or set its error.
+     */
+    private fun stillCurrent(draft: Any?): () -> Boolean {
+        val session = draftSession
+        val generation = (draft as? EditorDraft)?.editGeneration
+        return { draftSession == session && editorDraft === draft && (draft as? EditorDraft)?.editGeneration == generation }
+    }
     val profiles = MutableStateFlow<List<Profile>>(emptyList())
     val selected = MutableStateFlow<String?>(null)
     val pendingSwitch = MutableStateFlow<String?>(null)
@@ -319,7 +299,10 @@ internal class AppModelOperations(
 
     fun save(text: String, id: String?, event: String, configurationChanged: Boolean = false, done: () -> Unit): kotlinx.coroutines.Job {
         val draft = editorDraft
+        val current = stillCurrent(draft)
         return operation {
+            // A queued editor save whose draft was replaced or edited meanwhile is dropped, not committed.
+            if (draft != null && !current()) return@operation
             error.value = null
             try {
                 if (id != null && profiles.value.none { it.id == id }) throw ProfileError(R.string.profile_no_longer_exists)
@@ -339,17 +322,17 @@ internal class AppModelOperations(
                         }
                     } catch (_: Exception) { warning.value = true }
                     runCatching { log(event) }
-                    if (editorDraft === draft) runCatching { done() }.onFailure { warning.value = true }
+                    if (current()) runCatching { done() }.onFailure { warning.value = true }
                 } }
                 if (saveCommitted != null) saveCommitted.invoke(text, id, draft, publish)
                 else publish(saveDraft?.invoke(text, id, draft) ?: saveProfile(text, id))
             } catch (e: ProfileError) {
-                error.value = e.text(strings)
+                if (draft == null || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                error.value = resource(R.string.profile_save_failed)
+                if (draft == null || current()) error.value = resource(R.string.profile_save_failed)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
             }
         }
@@ -357,7 +340,9 @@ internal class AppModelOperations(
 
     fun delete(id: String, done: () -> Unit): kotlinx.coroutines.Job {
         val draft = editorDraft
+        val current = stillCurrent(draft)
         return operation {
+            if (draft != null && !current()) return@operation
             error.value = null
             try {
                 val vpn = runtime.value
@@ -379,17 +364,17 @@ internal class AppModelOperations(
                         if (pendingApply.value == id) pendingApply.value = null
                     } catch (_: Exception) { warning.value = true }
                     runCatching { log(resource(R.string.journal_profile_deleted)) }
-                    if (editorDraft === draft) runCatching { done() }.onFailure { warning.value = true }
+                    if (current()) runCatching { done() }.onFailure { warning.value = true }
                 } }
-                if (deleteCommitted != null) deleteCommitted.invoke(id, publish)
+                if (deleteCommitted != null) deleteCommitted.invoke(id, draft, publish)
                 else { deleteProfile(id); publish() }
             } catch (e: ProfileError) {
-                error.value = e.text(strings)
+                if (draft == null || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                error.value = resource(R.string.profile_delete_failed)
+                if (draft == null || current()) error.value = resource(R.string.profile_delete_failed)
                 journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
             }
         }
@@ -407,6 +392,69 @@ internal suspend fun publishStoreCommit(store: ProfileStore, requestId: UUID,
     operation: suspend () -> Unit, publish: suspend (CommitReceipt) -> Unit) {
     try { operation() }
     finally { withContext(NonCancellable) { store.committedReceipt(requestId)?.let { publish(it) } } }
+}
+
+/**
+ * Editor commits are compare-and-swap against the revision the draft was opened at (contract §8.3/§8.4),
+ * never against the revision current at save time, so A->B->A changes elsewhere are detected.
+ * Updates and deletes need the editor's draft for that id, unchanged since the request, with a base
+ * revision; otherwise they conflict. Only creation (id == null) commits with expected == null.
+ * A conflict throws [R.string.profile_edit_conflict] and leaves the draft and its imported SSH
+ * resources untouched. After a successful save the editor closes; if it stays open (stale result),
+ * its base is not advanced: every commit takes a new store revision, so reusing the old base conflicts.
+ * Main-thread owned.
+ */
+internal class EditorCommits(private val store: () -> ProfileStore) {
+    private val publications = ProfileReceiptPublications()
+    private val stored = mutableMapOf<String, StoredProfile>()
+
+    fun loaded(items: List<StoredProfile>) {
+        stored.clear()
+        items.forEach { stored[it.id] = it }
+    }
+
+    /** The revision [profile] was loaded at, or null when the shown profile is not the stored one. */
+    fun baseRevision(profile: Profile): ProfileRevision? = stored[profile.id]?.takeIf { it.profile == profile }?.revision
+
+    private fun conflict() = ProfileError(R.string.profile_edit_conflict)
+
+    private fun base(id: String, draft: EditorDraft?, text: String?): ProfileRevision {
+        if (draft == null || draft.profile.id != id || (text != null && draft.source.text != text)) throw conflict()
+        return draft.baseRevision ?: throw conflict()
+    }
+
+    suspend fun save(text: String, id: String?, draft: EditorDraft?, publish: suspend (Profile) -> Unit) {
+        val expected = id?.let { base(it, draft, text) }
+        val resources = if (id != null) draft?.resources else null
+        val store = store()
+        val uuid = id?.let(UUID::fromString) ?: UUID.randomUUID()
+        val requestId = UUID.randomUUID()
+        val normalized = withContext(Dispatchers.IO) { resources?.resolve(text, store.resources) ?: text }
+        val profile = ConfigDocument.parse(normalized).validate().copy(id = uuid.toString())
+        publishStoreCommit(store, requestId, operation = {
+            if (store.compareAndSave(requestId, uuid, expected, normalized, resources) is CommitResult.Conflict) throw conflict()
+        }) { receipt ->
+            if (publications.accept(receipt, stored[profile.id]?.revision)) {
+                stored[profile.id] = StoredProfile(profile, receipt.revision!!, receipt.digest!!)
+                publish(profile)
+            }
+        }
+    }
+
+    suspend fun delete(id: String, draft: EditorDraft?, publish: suspend () -> Unit) {
+        val expected = base(id, draft, null)
+        val store = store()
+        val uuid = UUID.fromString(id)
+        val requestId = UUID.randomUUID()
+        publishStoreCommit(store, requestId, operation = {
+            if (store.compareAndDelete(requestId, uuid, expected) is CommitResult.Conflict) throw conflict()
+        }) { receipt ->
+            if (publications.accept(receipt, stored[id]?.revision, expected)) {
+                stored.remove(id)
+                publish()
+            }
+        }
+    }
 }
 
 /** Keep tombstones so a late save receipt cannot resurrect a deleted profile. Main-thread owned. */

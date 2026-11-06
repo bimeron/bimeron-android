@@ -38,6 +38,7 @@
     <string name="profile_save_failed">Не удалось сохранить профиль</string>
     <string name="profile_delete_failed">Не удалось удалить профиль</string>
     <string name="profile_no_longer_exists">Профиль больше не существует</string>
+    <string name="profile_edit_conflict">Профиль изменён в другом месте. Черновик сохранён; откройте профиль заново, чтобы редактировать актуальную версию.</string>
     <string name="profile_delete_vpn_stop_failed">Не удалось отключить VPN. Профиль не удалён</string>
     <string name="profiles_load_failed">Не удалось загрузить профили</string>
     <string name="profile_select_failed">Не удалось выбрать профиль</string>
