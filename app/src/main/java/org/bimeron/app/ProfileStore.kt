@@ -458,6 +458,7 @@ class ProfileStore internal constructor(
      * Persists [body] for the ticket's profile and source. Under [guard]: the profile must still exist
      * with the ticket's source (source ABA is accepted), no newer ticket may have committed, and
      * [SnapshotTicket.stillValid] must hold. Byte equality is never authority.
+     * Precondition: [body] is 1..[SSConfSnapshots.MAX_BODY] bytes and was already accepted by Core.
      */
     suspend fun commitSnapshot(ticket: SnapshotTicket, body: ByteArray): SnapshotCommitResult {
         require(body.size in 1..SSConfSnapshots.MAX_BODY)
@@ -539,6 +540,7 @@ class ProfileStore internal constructor(
         val snapshots = snapshotDirectory()
         if (!java.nio.file.Files.exists(snapshots.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             java.nio.file.Files.createDirectory(snapshots.toPath(), PRIVATE_DIRECTORY)
+            syncDirectory(snapshots.parentFile)
         }
         require(java.nio.file.Files.isDirectory(snapshots.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
         java.nio.file.Files.setPosixFilePermissions(snapshots.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))

@@ -37,7 +37,7 @@ internal object SSConfSnapshots {
     fun sourceOf(document: ConfigDocument): String? {
         val raw = document.value("AccessKey", "SSConf").ifEmpty { document.value("AccessKey", "Key") }
         // Go strings.TrimSpace uses Unicode White_Space, excluding Java's extra control separators.
-        return raw.trim { it in '\u0009'..'\u000d' || it == ' ' || it == '\u0085' || it == ' ' || it == ' ' || it in ' '..' ' || it == ' ' || it == ' ' || it == ' ' || it == ' ' || it == '　' }
+        return raw.trim { it in '\u0009'..'\u000d' || it == ' ' || it == '\u0085' || it == '\u00a0' || it == '\u1680' || it in '\u2000'..'\u200a' || it == '\u2028' || it == '\u2029' || it == '\u202f' || it == '\u205f' || it == '\u3000' }
             .takeIf { it.startsWith("ssconf://") }
     }
 
