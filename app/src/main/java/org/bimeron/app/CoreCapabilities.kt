@@ -23,13 +23,7 @@ internal data class CoreCapabilities(
             parse(capabilityJson(version), capabilityJson(capabilities))
 
         internal fun capabilityJson(read: () -> String): String? = try { read() }
-        catch (_: NoSuchMethodError) { null }
-        catch (_: UnsatisfiedLinkError) { null }
-        catch (error: NoClassDefFoundError) {
-            // Only recover native initialization failures, not unrelated missing classes.
-            if (generateSequence(error.cause) { it.cause }.any { it is UnsatisfiedLinkError }) null
-            else throw error
-        }
+        catch (error: LinkageError) { if (isNativeLoadFailure(error)) null else throw error }
 
         fun parse(version: String?, capabilities: String?): CoreCapabilities {
             fun json(text: String?): JSONObject? = try { text?.let { JSONObject(it) } }
@@ -41,4 +35,14 @@ internal data class CoreCapabilities(
                     ("ikev2" to (caps?.optJSONObject("ikev2")?.opt("supported") as? Boolean)), caps.string("geodata_schema"))
         }
     }
+}
+
+/**
+ * A packaged Core that cannot be loaded or linked: a missing JNI method, a failed native library load,
+ * or a class whose initialization failed because of one. Unrelated missing classes are not included.
+ */
+internal fun isNativeLoadFailure(error: LinkageError): Boolean = when (error) {
+    is NoSuchMethodError, is UnsatisfiedLinkError -> true
+    is NoClassDefFoundError -> generateSequence(error.cause) { it.cause }.any { it is UnsatisfiedLinkError }
+    else -> false
 }

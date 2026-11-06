@@ -9,6 +9,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Fixed VPN failure taxonomy. User-visible text is derived only from [messageRes];
@@ -258,6 +259,35 @@ internal suspend fun ensureSessionAttempt(token: Long) {
     if (!VpnLive.gate.accepts(token)) throw CancellationException("Stale VPN attempt")
 }
 
+/** Fixed code published for an exception that ended a session attempt; never derived from its text. */
+internal fun sessionFailureCode(error: Exception): VpnErrorCode = when (error) {
+    is BimeronVpnService.SessionFailure -> error.code
+    is SSConfFailure -> error.code
+    else -> VpnErrorCode.START_FAILED
+}
+
+/**
+ * Native session creation order for one attempt (contract §7.2 step 3). When [snapshot] is set
+ * (an SSConf profile) it runs first, before [acquireNative], [canStartVpn] and any session factory,
+ * and the session is created only through [newSessionWithSnapshot]. Otherwise [newSession] is used.
+ * [acquireNative] records ownership of the native cleanup gate when it returns true.
+ */
+internal suspend fun <S, P : Any> createCoreSession(
+    snapshot: (suspend () -> P)?,
+    ensureAttempt: suspend () -> Unit,
+    acquireNative: () -> Boolean,
+    canStartVpn: () -> Boolean,
+    newSession: () -> S,
+    newSessionWithSnapshot: (P) -> S,
+): S {
+    val resolved = snapshot?.invoke()
+    ensureAttempt()
+    if (!acquireNative()) throw BimeronVpnService.SessionFailure(VpnErrorCode.CLEANUP_BLOCKED)
+    if (!canStartVpn()) throw BimeronVpnService.SessionFailure(VpnErrorCode.CORE_INCOMPATIBLE)
+    ensureAttempt()
+    return if (resolved != null) newSessionWithSnapshot(resolved) else newSession()
+}
+
 /** Single store-backed read of the session input, guarded before and after by the attempt token. */
 internal suspend fun readSessionInput(store: ProfileStore, id: String, token: Long): SessionInput {
     ensureSessionAttempt(token)
@@ -456,3 +486,153 @@ internal class AuthAttempt(
         return true
     }
 }
+
+/** Protocols Core starts without any SSH handshake, named as `[AccessKey]` source keys (§6). */
+internal val NON_INTERACTIVE_PROTOCOLS = setOf(
+    "SS", "SSConf", "SOCKS5", "HTTP", "MASQUE", "VLESS", "VMess", "Trojan", "Naive", "Hysteria2", "AnyTLS", "TUIC",
+)
+
+/** Allowlist name of each structured `Type =` form; SSH and unknown types have none. */
+private val NON_INTERACTIVE_FORMS: Map<ProtocolFormDescriptor, String> = mapOf(
+    ShadowsocksForm to "SS", Socks5Form to "SOCKS5", VlessProtocolForm to "VLESS", HttpConnectForm to "HTTP",
+    NaiveH2Form to "Naive", MasqueForm to "MASQUE", TrojanProtocolForm to "Trojan",
+)
+
+/**
+ * Conservative: true unless the profile is positively known to be non-interactive (§6).
+ * Core installs the SSH prompt for every SSH profile, so any SSH marker, any unknown protocol
+ * and any input that does not parse cleanly counts as possibly interactive.
+ */
+internal fun mayNeedInteractiveAuth(input: SessionInput?): Boolean {
+    if (input == null) return true
+    return try {
+        val text = Conf.read(input.bytes)
+        val profile = Conf.parse(text)
+        val document = ConfigDocument.parse(text)
+        val access = document.values("AccessKey")
+        when {
+            access.isEmpty() -> true
+            access.keys.any { it.equals("SSH", ignoreCase = true) } -> true
+            access.entries.any { it.key.equals("Type", ignoreCase = true) && coreTrim(it.value).equals("ssh", ignoreCase = true) } -> true
+            access.values.any { coreTrim(it).startsWith("ssh://", ignoreCase = true) } -> true
+            else -> recoveryProtocol(document, profile) !in NON_INTERACTIVE_PROTOCOLS
+        }
+    } catch (_: Exception) {
+        true
+    }
+}
+
+/** Go `unicode.IsSpace`, which `strings.TrimSpace` uses: Unicode White_Space, including U+0085. */
+private fun Char.isGoSpace(): Boolean = this in '\u0009'..'\u000d' || this == ' ' || this == '\u0085' || this == '\u00a0' ||
+    this == '\u1680' || this in '\u2000'..'\u200a' || this == '\u2028' || this == '\u2029' || this == '\u202f' ||
+    this == '\u205f' || this == '\u3000'
+
+/**
+ * A value as Core dispatches it: Core trims Go white space, strips one leading BOM and trims again
+ * (`core: internal/config/config.go:530`). Stripping any run of both is a superset, so a value Core
+ * would treat as `ssh://` is never missed (conservative).
+ */
+private fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
+
+/** Allowlist name of the profile's protocol, or null when it cannot be determined without doubt. */
+private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String? {
+    val source = document.source() ?: return NON_INTERACTIVE_FORMS[ProtocolForms.descriptor(document)]
+    // Both parsers must agree on the single source key.
+    if (source.first != profile.protocol) return null
+    return when (source.first) {
+        // A generic key resolves to its scheme's source field; an unsupported scheme throws.
+        "Key" -> Conf.keyField(source.second)
+        // An external file is not part of the session input.
+        "File" -> null
+        else -> source.first
+    }
+}
+
+/**
+ * Service effects of a start, behind a seam so the recovery wiring is testable on the JVM (§6, §13.1).
+ * The service implements it with the store, its preferences, the notification manager and the journal.
+ */
+internal interface RecoveryStartPort {
+    /** The single store-backed read of [id] under [token]; any failure is null. A real cancellation propagates. */
+    suspend fun read(id: String, token: Long): SessionInput?
+    /** Clears the persisted recovery id; false when it could not be saved. */
+    suspend fun clearRecovery(): Boolean
+    val destroyed: Boolean
+    fun postNotification()
+    fun cancelNotification()
+    fun recordSkip()
+    fun publishSkipped(token: Long)
+}
+
+internal sealed interface StartPlan {
+    /** Start the session. [input] is the classified recovery read, reused by the session; null for a user start. */
+    data class Proceed(val input: SessionInput?) : StartPlan
+    /** A possibly interactive recovery was skipped and its effects were applied; leave the foreground. */
+    data object Skipped : StartPlan
+    /** Another attempt took the gate while the profile was read; it owns the state, so leave silently. */
+    data object Superseded : StartPlan
+    /** The service was destroyed meanwhile; stop consuming commands. */
+    data object Destroyed : StartPlan
+}
+
+/** Called for every accepted start: a user start retires a pending "Tap to reconnect" notification. */
+internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {
+    if (!recovery) port.cancelNotification()
+}
+
+/**
+ * Plans a start. A user start is never read or classified here. A recovery start (anything but the
+ * explicit user START) reads the profile once, classifies that read off Main on [classifier], and
+ * proceeds only when the profile is positively non-interactive: recovery never shows UI, so a possible
+ * auth prompt skips the start instead (§6, §11.14). The proceeding plan carries the classified input,
+ * so the session starts exactly what was classified.
+ */
+internal suspend fun planStart(
+    recovery: Boolean,
+    id: String,
+    token: Long,
+    port: RecoveryStartPort,
+    classify: (SessionInput?) -> Boolean = ::mayNeedInteractiveAuth,
+    classifier: CoroutineContext = Dispatchers.Default,
+): StartPlan {
+    if (!recovery) return StartPlan.Proceed(null)
+    val input = port.read(id, token)
+    val interactive = withContext(classifier) { classify(input) }
+    currentCoroutineContext().ensureActive()
+    if (port.destroyed) return StartPlan.Destroyed
+    if (!VpnLive.gate.accepts(token)) return StartPlan.Superseded
+    if (!interactive && input != null) return StartPlan.Proceed(input)
+    port.clearRecovery()
+    currentCoroutineContext().ensureActive()
+    if (port.destroyed) return StartPlan.Destroyed
+    port.postNotification()
+    port.recordSkip()
+    port.publishSkipped(token)
+    return StartPlan.Skipped
+}
+
+/**
+ * Reuses a classified recovery read instead of reading again, so a concurrent edit cannot slip between
+ * classification and start. Fails closed: a stale attempt or a stale ticket is a cancellation, and an
+ * input for another profile is rejected; it never falls back to an unclassified read.
+ */
+internal suspend fun reuseClassifiedInput(input: SessionInput, id: String, token: Long): SessionInput {
+    ensureSessionAttempt(token)
+    if (input.ticket?.stillValid?.invoke() == false) throw CancellationException("Stale recovery input")
+    require(input.id.toString() == id) { "Classified input is for another profile" }
+    return input
+}
+
+/**
+ * The session's input: a recovery start reuses its [classified] read and never calls [read]; a user
+ * start (null [classified]) performs its single [read]. There is no other path to a session input.
+ */
+internal suspend fun sessionInputFor(
+    classified: SessionInput?,
+    id: String,
+    token: Long,
+    read: suspend () -> SessionInput,
+): SessionInput = if (classified != null) reuseClassifiedInput(classified, id, token) else read()
+
+/** The published state of a skipped recovery: a fixed code and message, no profile id or traffic. */
+internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureState(VpnErrorCode.RECOVERY_NEEDS_USER, text)

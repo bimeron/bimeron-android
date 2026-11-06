@@ -2,6 +2,8 @@
     <string name="app_name">Bimeron</string>
     <string name="vpn_notification_channel">VPN Bimeron</string>
     <string name="vpn_notification_text">Подключение активно</string>
+    <string name="vpn_recovery_notification_channel">Переподключение VPN</string>
+    <string name="vpn_recovery_notification_text">Нажмите, чтобы переподключиться</string>
     <string name="core_error">Ядро не смогло установить соединение</string>
     <string name="connection">Подключение</string>
     <string name="profiles">Профили</string>
