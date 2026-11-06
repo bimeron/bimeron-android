@@ -1,6 +1,7 @@
 package org.bimeron.app
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
@@ -154,7 +155,8 @@ class AuthPollingTest {
      * Stands in for runSession: the run job whose cancellation takes the finally path (auth unregistered
      * and withdrawn) and then sends Command.Finished([token]); [finished] records that send.
      */
-    private fun CoroutineScope.runJob(token: Long, finished: MutableList<Long>) = launch(Dispatchers.Default) {
+    // UNDISPATCHED: the body (and its finally) is entered before launch returns, so an early cancel cannot skip it.
+    private fun CoroutineScope.runJob(token: Long, finished: MutableList<Long>) = launch(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
         try {
             awaitCancellation()
         } finally {
