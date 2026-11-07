@@ -31,3 +31,14 @@ The fetch model follows Outline dynamic access keys: a user-initiated connect fe
 - **Recovery start** (any start other than the user `START`, e.g. a sticky restart; always-on is not started, see QA) and Core-internal reconnects use only the stored snapshot, with no network access. A recovery start without a usable stored snapshot ends like a skipped SSH recovery: `RECOVERY_NEEDS_USER`, the "Tap to reconnect" notification, a fixed journal entry and the recovery id cleared (a missing snapshot is skipped by `planStart`; a stored body Core rejects is caught in the snapshot step). The next user connect fetches. A start is a recovery exactly when the session got `planStart`'s classified read (`isRecoveryStart`).
 - Source and body never appear in logs, the journal, exception messages or `VpnState`.
 - Decision logic: `resolveSessionSnapshot` (JVM: `SSConfSessionSnapshotTest`); bind-only proof on the emulator: `SSConfConnectFetchTest`. See [SSCONF-NETWORK.md](SSCONF-NETWORK.md).
+
+## Session drop notice
+
+Without system lockdown, Android sends traffic over the physical network as soon as the TUN closes, so a session that ends on its own must not end silently (security audit M-1).
+
+- When `Command.Finished` arrives for the current attempt, `noteSessionFinished` / `shouldNotifyDrop` (`VpnRuntime.kt`) decide whether to post "VPN disconnected" (notification id 3, recovery channel, opens `MainActivity`). The text is fixed: no profile name, id, server, Core or error text.
+- It is posted when the attempt was not ended by the user and either reached `connected` (a later failure in any state notifies, including Core giving up while `reconnecting`) or was a recovery start (sticky restart, always-on), which runs unattended.
+- It is never posted for `Command.Stop` (including `onRevoke`), a newer `Start` (superseded token), `onDestroy` (all three advance the attempt gate), `AUTH_CANCELLED` (SSH sign-in cancel or host-key rejection) or `RECOVERY_NEEDS_USER` (which has its own "Tap to reconnect" notification). A user connect that fails before `connected` is not announced: the user is in the app and sees the error.
+- The user-intent check uses the code the attempt ended with, before a teardown code (`CLEANUP_BLOCKED`, `RECOVERY_STATE_FAILED`) replaces it. No new `VpnErrorCode` is added.
+- It is cancelled on the next user `START` (`noteStartCommand`, like the recovery notification) and when a session reaches `connected`. With notifications off (`POST_NOTIFICATIONS` not granted, or turned off) nothing is posted.
+- Switch and apply stop the old session before the new TUN exists, so protection briefly lapses without lockdown (audit L-2). This is a known limitation; see QA.

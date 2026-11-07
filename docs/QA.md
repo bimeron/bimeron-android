@@ -40,6 +40,25 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
   user granted the notification permission; without it the post is dropped
   silently and only the in-app state carries `RECOVERY_NEEDS_USER`. See
   "Notification permission" below for when the app asks.
+- Session drop notice (security audit M-1): when a session that had reached
+  Connected ends without the user stopping it (Core gives up, including while
+  reconnecting; packet I/O or network errors), or an unattended recovery start
+  (sticky restart) fails, the app posts "VPN disconnected" on the recovery channel.
+  The text is fixed (no profile, server or error text) and a tap opens the app. A
+  user stop (also a revoke from system settings or another VPN taking over), a new
+  connect or profile switch, an SSH sign-in cancel or host-key rejection, and the
+  recovery skip post nothing; a user connect that fails before Connected posts
+  nothing either, because the app shows the error. The notice is removed on the
+  next user connect and when a session reaches Connected. With notifications off
+  nothing is posted. Automated coverage: `DropNoticeDecisionTest` (JVM decision
+  table and gate wiring) and `DropNotificationTest` (Robolectric, the real
+  notification). Not yet verified on a device; see "Session drop notice (device
+  QA)" below.
+- Switching profiles or applying a saved change while connected stops the old
+  session (its TUN closes) before the new one establishes its TUN (audit L-2).
+  In between, traffic uses the physical network unless system "Block connections
+  without VPN" (lockdown) is on. For an ssconf profile the gap includes the
+  connect-time fetch.
 
 ### Notification permission
 
@@ -264,6 +283,25 @@ On a real phone (Wi-Fi ADB) with a real ssconf endpoint:
    restarted session uses the saved configuration with no request in the server
    log. Network switches during a session (Core-internal reconnects) make no
    request either.
+
+## Session drop notice (device QA)
+
+On a real phone (Wi-Fi ADB), with notifications allowed for Bimeron:
+
+1. Connect, move the app to the background, then stop the server (or block it
+   on the router). When Core gives up, "VPN disconnected · Your traffic is no
+   longer protected by Bimeron. Tap to open the app." appears. It shows no profile
+   name or server. Tap it: Bimeron opens on the connection page with the error.
+2. Repeat with airplane mode on mid-session and wait until Core gives up
+   (Reconnecting, then the failure): the same notice appears.
+3. Tap Connect again: the notice disappears at once (user start).
+4. Connect, then stop from the app or the VPN notification: no notice.
+5. Connect, then disconnect from system VPN settings: no notice.
+6. Connect a profile whose server is offline (fails before Connected): no notice;
+   the error is shown in the app.
+7. SSH profile: cancel the sign-in prompt: no notice.
+8. Turn Bimeron's notifications off in system settings and repeat step 1: nothing
+   is posted and nothing crashes; the in-app state shows the failure.
 
 ## Manual TalkBack checklist
 
