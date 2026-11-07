@@ -69,7 +69,7 @@ class CoreProtocolValidationTest {
     }
     @Test fun supportedUriAndExplicitDocuments() = runBlocking {
         isolated { store, _ -> accepted().forEach { (id, text) ->
-            try { store.validate(text); val saved = store.save(text); assertEquals(text, store.load().first.single { it.id == saved.id }.text) }
+            try { store.validate(text, java.util.UUID.randomUUID()); val saved = store.save(text); assertEquals(text, store.load().first.single { it.id == saved.id }.text) }
             catch (e: Exception) { throw AssertionError("$id rejected by packaged Android Core", e) }
         } }
     }
