@@ -109,7 +109,10 @@ Manual device checklist (API 33+ unless noted):
 - Three sections, collapsible profiles on the home screen and separate
   selected/active IDs. Selecting or adding keeps the list expansion until the
   next launch; reselecting does not start the VPN. Switching while connected
-  requires confirmation. A denied Android VPN consent is shown as an error.
+  requires confirmation. Confirming a switch to a profile Android cannot start
+  (proxy mode or core `KillSwitch = true`) disconnects the VPN and starts
+  nothing, and the dialog says so (audit L-3; `AppModelOperationsTest`). A denied
+  Android VPN consent is shown as an error.
   Configuration changes to the active profile are saved without disconnecting
   and offer a separate reconnect; renaming alone does not. Duration and traffic
   come from the service state.

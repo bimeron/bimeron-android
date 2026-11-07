@@ -98,6 +98,7 @@
     <string name="config_unavailable_message">Changes have been saved for the next start. This configuration does not support system VPN; the current connection remains active.</string>
     <string name="switch_proxy_message">Profile “%1$s” runs as a local proxy. The current VPN will be disconnected.</string>
     <string name="select_proxy_action">Disconnect and select</string>
+    <string name="switch_unsupported_message">Profile “%1$s” cannot run as a system VPN (KillSwitch = true). The current VPN will be disconnected.</string>
     <string name="profile_conflict_review">The profile was changed elsewhere, so your edits were not saved. Save again to review and merge the changes.</string>
     <string name="profile_conflict_unreadable">The saved profile can no longer be read, so your edits were not saved. You can save them as a new profile.</string>
     <string name="profile_conflict_title">Profile changed elsewhere</string>

@@ -96,6 +96,7 @@
     <string name="config_unavailable_message">Изменения сохранены для следующего запуска. Эта конфигурация не поддерживает системный VPN; текущее подключение продолжает работать.</string>
     <string name="switch_proxy_message">Профиль «%1$s» работает как локальный прокси. Текущий VPN будет отключён.</string>
     <string name="select_proxy_action">Отключить и выбрать</string>
+    <string name="switch_unsupported_message">Профиль «%1$s» не может работать как системный VPN (KillSwitch = true). Текущий VPN будет отключён.</string>
     <string name="profile_conflict_review">Профиль изменён в другом месте, поэтому правки не сохранены. Сохраните ещё раз, чтобы просмотреть и объединить изменения.</string>
     <string name="profile_conflict_unreadable">Сохранённый профиль больше не читается, поэтому правки не сохранены. Их можно сохранить как новый профиль.</string>
     <string name="profile_conflict_title">Профиль изменён в другом месте</string>
