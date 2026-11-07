@@ -247,4 +247,52 @@ class SshProfileResourcesTest {
         failure { SshProfileResources(linkedRoot).stage(SshProfileResources.Kind.IDENTITY, "fake".byteInputStream()) }
         assertEquals(listOf("synthetic"), outside.list()!!.toList())
     }
+
+    @Test fun unsavedDraftGenerationsSurviveOtherSavesAndDeletesUntilSavedOrAborted() {
+        val store = store()
+        val id = UUID.randomUUID()
+        val committed = imported(store, id, SshProfileResources.Kind.IDENTITY, "committed")
+        store.afterSaved(id, setOf(committed.path))
+        val draftToken = store.stage(SshProfileResources.Kind.KNOWN_HOSTS, "draft".byteInputStream())
+        val draft = store.prepare(id, draftToken, draft = true)
+        // Another writer saves the profile without the draft's generation: it is kept for the draft's retry.
+        store.afterSaved(id, setOf(committed.path))
+        assertTrue(File(draft.path).exists())
+        assertSame(draft, store.prepare(id, draftToken, draft = true))
+        // Once the draft's save references it, it is an ordinary saved generation and can be pruned later.
+        store.afterSaved(id, setOf(committed.path, draft.path))
+        store.afterSaved(id, setOf(committed.path))
+        assertFalse(File(draft.path).exists())
+        // A delete elsewhere keeps an open draft's unsaved generation; abort then releases it.
+        val pending = store.prepare(id, store.stage(SshProfileResources.Kind.IDENTITY, "pending".byteInputStream()), draft = true)
+        store.afterDeleted(id)
+        assertFalse(File(committed.path).exists())
+        assertTrue(File(pending.path).exists())
+        store.abort(pending)
+        assertFalse(File(pending.path).exists())
+        store.afterDeleted(id)
+        assertFalse(File(pending.path).parentFile.parentFile.exists())
+    }
+
+    @Test fun copiesAreIndependentStagedTokens() {
+        val store = store()
+        val id = UUID.randomUUID()
+        val saved = imported(store, id, SshProfileResources.Kind.IDENTITY, "saved")
+        val staged = store.stage(SshProfileResources.Kind.KNOWN_HOSTS, "staged".byteInputStream())
+        val copy = store.copy(staged)
+        val committedCopy = checkNotNull(store.copyCommitted(id, saved.path, SshProfileResources.Kind.IDENTITY))
+        assertNull(store.copyCommitted(id, saved.path, SshProfileResources.Kind.KNOWN_HOSTS))
+        assertNull(store.copyCommitted(UUID.randomUUID(), saved.path, SshProfileResources.Kind.IDENTITY))
+        assertNull(store.copyCommitted(id, "/etc/ssh/identity", SshProfileResources.Kind.IDENTITY))
+        val other = UUID.randomUUID()
+        assertEquals("staged", File(store.prepare(other, copy).path).readText())
+        assertEquals("saved", File(store.prepare(other, committedCopy).path).readText())
+        assertEquals("staged", staged.file.readText())
+        // A prepared token is copied from its published generation.
+        val prepared = store.prepare(id, staged)
+        assertEquals("staged", File(store.prepare(other, store.copy(staged)).path).readText())
+        assertTrue(File(prepared.path).exists())
+        File(saved.path).delete()
+        failure { store.copyCommitted(id, saved.path, SshProfileResources.Kind.IDENTITY) }
+    }
 }
