@@ -55,6 +55,13 @@ class CoreProtocolValidationTest {
         "android-proxy-mode" to explicit("socks5").replace("Mode = vpn", "Mode = proxy"),
         "android-killswitch" to explicit("socks5").replace("KillSwitch = false", "KillSwitch = true")
     )
+    /**
+     * A private store on a fresh files directory of its own, deliberately not the process-wide one: the
+     * rejection test asserts that every file under the store's root is byte-for-byte unchanged, and the
+     * app's real files directory also holds files other components write on their own schedule (DataStore,
+     * ProfileInstaller). No other code uses this directory, so it adds no second writer to the production
+     * store (contract D5).
+     */
     private suspend fun isolated(block: suspend (ProfileStore, File) -> Unit) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val root = File.createTempFile("protocol-validation-", "", context.cacheDir)
