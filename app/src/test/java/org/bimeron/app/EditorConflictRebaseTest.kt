@@ -668,7 +668,6 @@ class EditorConflictRebaseTest {
         model.delete(id) { done++ }.join()
         assertEquals(0, stops)
         val draft = open(other)
-        runtime.value = VpnState(state = "connecting", attemptProfileId = other)
         assertTrue(deleteStopsVpn(runtime.value, draft.profile.id))
         model.delete(other) { done++ }.join()
         assertEquals(1, stops)
