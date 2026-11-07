@@ -168,10 +168,11 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     var delete by remember { mutableStateOf(false) }
     var reveal by remember(profile.id) { mutableStateOf(false) }
     var rawReveal by remember(profile.id, draft.tab) { mutableStateOf(false) }
-    // The "Key or link" field edits an ssconf link in place. Once the general tab opens on an ssconf form it
-    // stays editable there, even if an edit makes the link unparseable (that is reported as invalid instead).
-    val ssconfLinkOpen = remember(draft, draft.session, draft.tab) { draft.tab == 0 && !SsConfForms.rawOnly(draft.document) }
     val original = ConfigDocument.parse(draft.profile.text)
+    // The "Key or link" field edits the link of a profile opened as an ssconf form. That is fixed by the draft's
+    // base (stored) profile, not by the current text, so tab switches and rotation keep it: an edit that breaks the
+    // link stays editable and is reported invalid, and the form can never save it as another source.
+    val ssconfLinkOpen = remember(draft.profile.text) { !SsConfForms.rawOnly(original) }
     val protected = ProtocolForms.protected(draft.document) || ProtocolForms.protected(original) ||
         OtherUriProtocolForms.protected(draft.document) || OtherUriProtocolForms.protected(original) ||
         ShadowTlsProtocolForm.protected(draft.document) || ShadowTlsProtocolForm.protected(original) ||
@@ -187,7 +188,8 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     fun validate(save: Boolean) {
         if (locked || draft.pendingProtocolEdits) return
         if (ShadowTlsProtocolForm.invalid(draft.document)) { draft.error = context.getString(R.string.shadowtls_invalid); return }
-        if (ProtocolForms.invalid(draft.document) || SsConfForms.linkInvalid(draft.document, ssconfLinkOpen)) { draft.error = context.getString(R.string.protocol_form_invalid); return }
+        // Source config edits the whole document (e.g. a deliberate protocol change), so there only the format check applies.
+        if (ProtocolForms.invalid(draft.document) || SsConfForms.linkInvalid(draft.document, ssconfLinkOpen && draft.tab != 3)) { draft.error = context.getString(R.string.protocol_form_invalid); return }
         if (OtherUriProtocolForms.invalid(draft.document)) { draft.error = context.getString(R.string.other_uri_invalid); return }
         draft.validating = true
         draft.error = null
