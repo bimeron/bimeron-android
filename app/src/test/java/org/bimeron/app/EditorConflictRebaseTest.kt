@@ -38,10 +38,12 @@ class EditorConflictRebaseTest {
         var readHook: suspend () -> Unit = {}
         var done = 0
         var stops = 0
+        /** What the VPN service does on stop; by default it reaches "disconnected" at once. */
+        var onStop: () -> Unit = { runtime.value = VpnState() }
         val commits = EditorCommits { store }
         val model = AppModelOperations(scope,
             { loadHook(); val (items, warning) = store.load(); commits.loaded(items); items.map { it.profile } to warning },
-            { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, runtime, { stops++; runtime.value = VpnState() }, {},
+            { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, runtime, { stops++; onStop() }, {},
             saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
             deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
             checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) },
@@ -672,5 +674,40 @@ class EditorConflictRebaseTest {
         assertEquals(1, stops)
         assertEquals(2, done)
         assertTrue(store.load().first.isEmpty())
+    }
+
+    /** A failed attempt still names the profile: the delete stops the VPN and waits for the stop's own result. */
+    private suspend fun Fixture.deleteAfterAFailedAttempt(id: String, stopResult: VpnState) {
+        open(id)
+        val stale = VpnState("failed", attemptProfileId = id, message = "attempt failed")
+        runtime.value = stale
+        val stopped = CompletableDeferred<Unit>()
+        onStop = { stopped.complete(Unit) }   // the service publishes its result later
+        val deleting = model.delete(id) { done++ }
+        stopped.await()
+        delay(200)
+        assertFalse("the stale pre-stop failure is not the stop's result", deleting.isCompleted)
+        assertSame(stale, runtime.value)
+        assertNull(model.error.value)
+        assertTrue(File(profilesDir, "$id.conf").exists())
+        runtime.value = stopResult
+        deleting.join()
+        assertEquals(1, stops)
+    }
+
+    @Test fun deleteAfterAFailedAttemptWaitsForTheStopInsteadOfTheStaleFailure() = scenario {
+        val id = create(ss("A"))
+        deleteAfterAFailedAttempt(id, VpnState())
+        assertNull(model.error.value)
+        assertEquals(1, done)
+        assertTrue(store.load().first.isEmpty())
+    }
+
+    @Test fun deleteAfterAFailedAttemptStillFailsOnAFreshTeardownFailure() = scenario {
+        val id = create(ss("A"))
+        deleteAfterAFailedAttempt(id, VpnState("failed", attemptProfileId = id, message = "teardown failed"))
+        assertEquals("#${R.string.profile_delete_vpn_stop_failed}", model.error.value)
+        assertEquals(0, done)
+        assertEquals(listOf(id), store.load().first.map { it.id })
     }
 }

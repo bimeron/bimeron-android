@@ -528,8 +528,10 @@ internal class AppModelOperations(
             val vpn = runtime.value
             if (deleteStopsVpn(vpn, id)) {
                 stop()
+                // The pre-stop value may itself be "failed" (a failed attempt still names the profile): only a
+                // failure published after it is the stop's result. No drop(1): a quick "disconnected" counts.
                 val stopped = withTimeoutOrNull(15_000) {
-                    runtime.first { it.state == "disconnected" || it.state == "failed" }
+                    runtime.first { it.state == "disconnected" || (it.state == "failed" && it != vpn) }
                 }
                 if (stopped?.state != "disconnected") throw ProfileError(R.string.profile_delete_vpn_stop_failed)
             }
