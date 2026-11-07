@@ -6,8 +6,10 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Test
@@ -27,60 +29,64 @@ class EditorLocaleLifecycleTest {
     }
     private fun exerciseEditor(tag: String, expectedTitle: String) = runBlocking {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val store = ProfileStore(app)
-        val model = AppModel(app)
-        state.phase = "wait: model loaded"
-        withTimeout(10_000) { model.loading.first { !it } }
-        val previousSelection = model.selected.value
-        val profile = store.save(Conf.fromKey("Editor UI fixture", "socks5://192.0.2.10:1080"))
-        try {
-            model.refresh().join()
-            model.select(profile.id).join()
-            state.phase = "wait: fixture selected"
-            withTimeout(10_000) { model.selected.first { it == profile.id } }
+        // The process-wide store that MainActivity's model also uses (contract D5: single writer).
+        val store = sharedStore(app)
+        store.deleteFixturesNamed(FIXTURE)
+        runThenCleanUp<Unit>({
+            val profile = store.createFixture(Conf.fromKey(FIXTURE, "socks5://192.0.2.10:1080"))
             state.step("launch activity") { ActivityScenario.launch(MainActivity::class.java) }.use { scenario ->
-                try {
-                    state.scenario = scenario
-                    state.awaitActivityLocale(tag, expectedTitle)
-                    fun label(id: Int, vararg args: Any): String {
-                        var value = ""
-                        scenario.onActivity { value = it.getString(id, *args) }
-                        return value
+                state.scenario = scenario
+                val model = scenario.activityModel()
+                state.phase = "wait: model loaded"
+                model.awaitLoaded()
+                // A fixture id here is a leftover selection, not one worth restoring.
+                val previousSelection = model.selected.value?.takeUnless { it == profile.id }
+                runThenCleanUp({
+                    try {
+                        // select() writes Main-owned state of the live activity's model.
+                        withContext(Dispatchers.Main) { model.select(profile.id) }
+                        state.phase = "wait: fixture selected"
+                        withTimeout(10_000) { model.selected.first { it == profile.id } }
+                        state.awaitActivityLocale(tag, expectedTitle)
+                        fun label(id: Int, vararg args: Any): String {
+                            var value = ""
+                            scenario.onActivity { value = it.getString(id, *args) }
+                            return value
+                        }
+                        click(waitNode("configure profile") { it.contentDescription?.toString() == label(R.string.configure_profile, FIXTURE) })
+                        waitNode("editor title") { it.text?.toString() == expectedTitle }
+                        val name = waitNode("name field") { it.className?.toString() == "android.widget.EditText" && it.text?.toString()?.contains(FIXTURE) == true }
+                        assertTrue(name.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "Changed draft") }))
+                        click(waitNode("network tab") { it.text?.toString() == label(R.string.editor_network) })
+                        waitNode("interface field") { it.text?.toString()?.contains(label(R.string.editor_interface_name)) == true }
+                        state.step("move to CREATED") { scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED) }
+                        state.step("move to RESUMED") { scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED) }
+                        state.step("recreate activity") { scenario.recreate() }
+                        state.awaitActivityLocale(tag, expectedTitle)
+                        waitNode("restored interface field") { it.text?.toString()?.contains(label(R.string.editor_interface_name)) == true }
+                        assertEquals(FIXTURE, store.load().first.single { it.id == profile.id }.name)
+                        click(waitNode("back from network") { it.contentDescription?.toString() == label(R.string.back) })
+                        waitNode("discard dialog") { it.text?.toString() == label(R.string.editor_discard_title) }
+                        click(waitNode("continue editing") { it.text?.toString() == label(R.string.editor_continue_editing) })
+                        click(waitNode("basic tab") { it.text?.toString() == label(R.string.editor_general) })
+                        waitNode("restored draft") { it.text?.toString()?.contains("Changed draft") == true }
+                        click(waitNode("back from basic") { it.contentDescription?.toString() == label(R.string.back) })
+                        click(waitNode("discard changes") { it.text?.toString() == label(R.string.editor_discard) })
+                        waitNode("home title") { it.text?.toString() == "Bimeron" }
+                        assertEquals(FIXTURE, store.load().first.single { it.id == profile.id }.name)
+                    } catch (failure: Throwable) {
+                        state.captureFailure()
+                        throw failure
                     }
-                    click(waitNode("configure profile") { it.contentDescription?.toString() == label(R.string.configure_profile, "Editor UI fixture") })
-                    waitNode("editor title") { it.text?.toString() == expectedTitle }
-                    val name = waitNode("name field") { it.className?.toString() == "android.widget.EditText" && it.text?.toString()?.contains("Editor UI fixture") == true }
-                    assertTrue(name.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "Changed draft") }))
-                    click(waitNode("network tab") { it.text?.toString() == label(R.string.editor_network) })
-                    waitNode("interface field") { it.text?.toString()?.contains(label(R.string.editor_interface_name)) == true }
-                    state.step("move to CREATED") { scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED) }
-                    state.step("move to RESUMED") { scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED) }
-                    state.step("recreate activity") { scenario.recreate() }
-                    state.awaitActivityLocale(tag, expectedTitle)
-                    waitNode("restored interface field") { it.text?.toString()?.contains(label(R.string.editor_interface_name)) == true }
-                    assertEquals("Editor UI fixture", store.load().first.single { it.id == profile.id }.name)
-                    click(waitNode("back from network") { it.contentDescription?.toString() == label(R.string.back) })
-                    waitNode("discard dialog") { it.text?.toString() == label(R.string.editor_discard_title) }
-                    click(waitNode("continue editing") { it.text?.toString() == label(R.string.editor_continue_editing) })
-                    click(waitNode("basic tab") { it.text?.toString() == label(R.string.editor_general) })
-                    waitNode("restored draft") { it.text?.toString()?.contains("Changed draft") == true }
-                    click(waitNode("back from basic") { it.contentDescription?.toString() == label(R.string.back) })
-                    click(waitNode("discard changes") { it.text?.toString() == label(R.string.editor_discard) })
-                    waitNode("home title") { it.text?.toString() == "Bimeron" }
-                    assertEquals("Editor UI fixture", store.load().first.single { it.id == profile.id }.name)
-                } catch (failure: Throwable) {
-                    state.captureFailure()
-                    throw failure
+                }) {
+                    if (previousSelection != null && model.profiles.value.any { it.id == previousSelection }) {
+                        withContext(Dispatchers.Main) { model.select(previousSelection) }
+                        state.phase = "wait: selection restored"
+                        withTimeout(10_000) { model.selected.first { it == previousSelection } }
+                    }
                 }
             }
-        } finally {
-            if (previousSelection != null) {
-                model.select(previousSelection)
-                state.phase = "wait: selection restored"
-                withTimeout(10_000) { model.selected.first { it == previousSelection } }
-            }
-            model.deleteStoredFixture(store, profile.id)
-        }
+        }) { store.deleteFixturesNamed(FIXTURE) }
     }
     private fun waitNode(phase: String, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo {
         state.phase = "wait: $phase"
@@ -90,5 +96,9 @@ class EditorLocaleLifecycleTest {
         var target: AccessibilityNodeInfo? = node
         while (target != null && !target.isClickable) target = target.parent
         check(target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+    }
+
+    private companion object {
+        const val FIXTURE = "Editor locale fixture"
     }
 }

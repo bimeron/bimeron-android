@@ -3,7 +3,6 @@ package org.bimeron.app
 import androidx.activity.compose.setContent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -61,18 +60,18 @@ class VlessProfileEditorTest {
     }
 
     @Test fun explicitAndUriRawDefaultsAreProtected() {
-        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val model = AppModel(app)
         for (type in listOf("vless", "uri-vless")) {
             val profile = Profile(type, type, type, "vpn",
                 "[AccessKey]\n${if (type == "vless") "Type = vless\nID = fixture-secret\nEncryption = none\nNetwork = tcp\nSecurity = tls" else "VLESS = vless://fixture-secret@host:443?security=tls"}\n")
-            model.editorDraft = EditorDraft(profile).also { it.tab = 3 }
             var show = ""
             var hide = ""
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                // The activity's own model (contract D5: one production store behind it).
+                val model = scenario.loadedActivityModel()
                 scenario.onActivity { activity ->
                     show = activity.getString(R.string.protocol_form_show)
                     hide = activity.getString(R.string.protocol_form_hide)
+                    model.editorDraft = EditorDraft(profile).also { it.tab = 3 }
                     activity.setContent {
                         androidx.compose.material3.MaterialTheme {
                             ProfileEditor(model, profile, false, null, VpnState()) {}

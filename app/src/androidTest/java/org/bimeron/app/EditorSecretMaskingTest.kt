@@ -7,7 +7,6 @@ import androidx.compose.ui.semantics.semantics
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.CompletableDeferred
@@ -62,8 +61,6 @@ class EditorSecretMaskingTest {
     }
 
     @Test fun rawProfilesAreMaskedUntilRevealedAndRemaskedOnTabReturn() {
-        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val model = AppModel(app)
         val fixtures = listOf("ss", "shadowsocks", "socks5", "ssh", "trojan", "future").map { type ->
             type to "[AccessKey]\nType = $type\nServer = host\nPort = 443\nMethod = aes-128-gcm\nPassword = fixture-secret\n"
         } + Conf.sources.map { source ->
@@ -75,6 +72,8 @@ class EditorSecretMaskingTest {
         var network = ""
         var raw = ""
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            // The activity's own model (contract D5: one production store behind it).
+            val model = scenario.loadedActivityModel()
             scenario.onActivity { activity ->
                 show = activity.getString(R.string.protocol_form_show)
                 hide = activity.getString(R.string.protocol_form_hide)
@@ -149,15 +148,13 @@ class EditorSecretMaskingTest {
         }
     }
     @Test fun ssconfGeneralDispatchMasksSourceAndGatesInvalidSave() {
-        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val model = AppModel(app)
         for (sourceKey in listOf("SSConf", "Key")) {
             val source = "ssconf://host/fixture-secret with-space"
             val profile = Profile("ssconf-$sourceKey", "SSConf", "ssconf", "vpn",
                 "[AccessKey]\n$sourceKey = $source\n")
             val draft = EditorDraft(profile)
-            model.editorDraft = draft
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val model = scenario.loadedActivityModel()
                 var sourceLabel = ""
                 var done = ""
                 var invalid = ""
@@ -165,6 +162,7 @@ class EditorSecretMaskingTest {
                     sourceLabel = activity.getString(R.string.editor_key_or_link)
                     done = activity.getString(R.string.editor_done)
                     invalid = activity.getString(R.string.protocol_form_invalid)
+                    model.editorDraft = draft
                     activity.setContent {
                         androidx.compose.material3.MaterialTheme {
                             ProfileEditor(model, profile, false, null, VpnState()) {}
@@ -189,8 +187,6 @@ class EditorSecretMaskingTest {
     }
 
     @Test fun ssconfOriginalAndCurrentSourcesProtectRawAndErrors() {
-        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
-        val model = AppModel(app)
         val secret = "ssconf://host/fixture-secret?token=private"
         for (originalProtected in listOf(true, false)) {
             val protectedText = "[AccessKey]\nKey = $secret\n"
@@ -202,13 +198,14 @@ class EditorSecretMaskingTest {
                 it.tab = 3
                 it.error = secret
             }
-            model.editorDraft = draft
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val model = scenario.loadedActivityModel()
                 var show = ""
                 var failed = ""
                 scenario.onActivity { activity ->
                     show = activity.getString(R.string.protocol_form_show)
                     failed = activity.getString(R.string.protocol_form_failed)
+                    model.editorDraft = draft
                     activity.setContent {
                         androidx.compose.material3.MaterialTheme {
                             ProfileEditor(model, profile, false, secret, VpnState()) {}

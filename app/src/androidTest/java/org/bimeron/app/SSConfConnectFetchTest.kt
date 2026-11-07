@@ -8,7 +8,6 @@ import android.system.Os
 import android.system.OsConstants
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -39,7 +38,7 @@ import org.junit.runner.RunWith
 /**
  * Contract §13.2 SSConfConnectFetchTest (formerly RefreshBindOnlyTest): the connect-time ssconf fetch is
  * bind-only. Each attempt runs the service's composition from runSession, `createCoreSession(snapshot =
- * loadSessionSnapshot(...))`, with a private [ProfileStore], real Core validation, the production lease
+ * loadSessionSnapshot(...))`, with the process-wide [ProfileStore] the service itself uses (contract D5), real Core validation, the production lease
  * scope of [fetchSSConf] ([withSSConfNetwork], consent pre-granted by [SSConfConsentFixture]) and real
  * unstarted `newSessionWithSSConfSnapshot`.
  *
@@ -62,10 +61,7 @@ class SSConfConnectFetchTest {
     private val refusedSource = "ssconf://127.0.0.1:9/bimeron-connect-fetch-secret"
     private val valid = "ss://YWVzLTEyOC1nY206cGFzcw@192.0.2.10:8388".toByteArray()
     private val replacement = "ss://YWVzLTEyOC1nY206b3RoZXI@192.0.2.11:8388".toByteArray()
-    private val root = File(context.cacheDir, "connect-fetch-${UUID.randomUUID()}")
-    private val store by lazy {
-        ProfileStore(null, File(root, "profiles").apply { mkdirs() }, SshProfileResources(File(root, "ssh-resources"))) {}
-    }
+    private val store by lazy { runBlocking { sharedStore(context) } }
     private val id = UUID.randomUUID()
     private var journal: android.content.res.Resources? = null
 
@@ -76,7 +72,15 @@ class SSConfConnectFetchTest {
 
     @After fun cleanUp() {
         AppEvents.resources = journal
-        root.deleteRecursively()
+    }
+
+    /**
+     * Runs [body] between two deletions of every profile named [FIXTURE]: the first removes leftovers of an
+     * aborted run, the second this test's fixture. Deleting a profile also deletes its ssconf snapshot.
+     */
+    private fun withFixture(body: suspend () -> Unit) = runBlocking {
+        store.deleteFixturesNamed(FIXTURE)
+        runThenCleanUp({ body() }) { store.deleteFixturesNamed(FIXTURE) }
     }
 
     /** A plain HTTP endpoint on all local addresses that serves [body] and counts requests. */
@@ -150,7 +154,7 @@ class SSConfConnectFetchTest {
     }
 
     private suspend fun saveProfile(source: String) {
-        assertTrue(store.compareAndSave(UUID.randomUUID(), id, null, Conf.fromKey("Connect fetch", source), null)
+        assertTrue(store.compareAndSave(UUID.randomUUID(), id, null, Conf.fromKey(FIXTURE, source), null)
             is CommitResult.Committed)
     }
 
@@ -215,7 +219,7 @@ class SSConfConnectFetchTest {
     }
 
     @Test fun userConnectFetchesOnceThroughTheLeasedPhysicalNetworkBeforeTheTun() =
-        SSConfConsentFixture.withConsent(context, true) { runBlocking {
+        SSConfConsentFixture.withConsent(context, true) { withFixture {
             saveProfile(localSource)
             persist(valid)
             val before = AppEvents.entries.value
@@ -244,7 +248,7 @@ class SSConfConnectFetchTest {
         } }
 
     @Test fun recoveryStartUsesTheStoredSnapshotWithoutFetchOrLease() =
-        SSConfConsentFixture.withConsent(context, true) { runBlocking {
+        SSConfConsentFixture.withConsent(context, true) { withFixture {
             saveProfile(localSource)
             persist(valid)
             LocalEndpoint(replacement).use { endpoint ->
@@ -263,7 +267,7 @@ class SSConfConnectFetchTest {
         } }
 
     @Test fun failedFetchWithStoredSnapshotFallsBackAndCreatesTheSession() =
-        SSConfConsentFixture.withConsent(context, true) { runBlocking {
+        SSConfConsentFixture.withConsent(context, true) { withFixture {
             saveProfile(refusedSource)
             persist(valid)
             val events = AppEvents.entries.value
@@ -285,7 +289,7 @@ class SSConfConnectFetchTest {
         } }
 
     @Test fun failedFetchWithoutStoredSnapshotFailsWithTheFetchCode() =
-        SSConfConsentFixture.withConsent(context, true) { runBlocking {
+        SSConfConsentFixture.withConsent(context, true) { withFixture {
             saveProfile(refusedSource)
             bindOnly {
                 val result = attempt(recovery = false) { source -> fetchSSConf(context, source) }
@@ -300,7 +304,7 @@ class SSConfConnectFetchTest {
         } }
 
     @Test fun rejectedFetchedBodyWithoutStoredSnapshotIsSnapshotInvalid() =
-        SSConfConsentFixture.withConsent(context, true) { runBlocking {
+        SSConfConsentFixture.withConsent(context, true) { withFixture {
             saveProfile(localSource)
             LocalEndpoint("not a shadowsocks body".toByteArray()).use { endpoint ->
                 val observed = Observed()
@@ -321,5 +325,9 @@ class SSConfConnectFetchTest {
             Androidcore.newSSConfSnapshot(localSource, "not a shadowsocks body".toByteArray())
             fail("Core accepted an invalid body")
         } catch (_: Exception) {}
+    }
+
+    private companion object {
+        const val FIXTURE = "ssconf connect fetch fixture"
     }
 }

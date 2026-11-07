@@ -6,10 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,7 +24,8 @@ class SsConfLinkEditorTest {
     private val name = "ssconf link editor fixture"
 
     @Test fun editedLinkIsSavedUnderItsSourceKey() = runBlocking {
-        val store = withContext(Dispatchers.IO) { ProfileStore.get(app) }
+        // The process-wide store that MainActivity's model also uses (contract D5: single writer).
+        val store = sharedStore(app)
         store.deleteFixturesNamed(name)
         for (key in listOf("SSConf", "Key")) {
             val text = Conf.fromKey(name, "ssconf://old.invalid/fixture-secret")
@@ -34,11 +33,12 @@ class SsConfLinkEditorTest {
             assertEquals(key, ConfigDocument.parse(profile.text).source()?.first)
             val replacement = "ssconf://new.invalid/fixture-secret-$key"
             runThenCleanUp({
-                val model = withContext(Dispatchers.Main) { AppModel(app) }
-                checkNotNull(model.openStoredEditor(profile.id))
                 var label = ""
                 var done = ""
                 ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                    // The activity's own model opens the stored profile at its revision, as the UI would.
+                    val model = scenario.loadedActivityModel()
+                    checkNotNull(model.openStoredEditor(profile.id))
                     scenario.onActivity { activity ->
                         label = activity.getString(R.string.editor_key_or_link)
                         done = activity.getString(R.string.editor_done)

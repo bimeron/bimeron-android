@@ -3,7 +3,6 @@ package org.bimeron.app
 import androidx.activity.compose.setContent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
@@ -16,13 +15,14 @@ class SharedSafetyEditorTest {
         val text = "[AccessKey]\nType = socks5\nServer = host\nPort = 1080\nPassword = fixture-secret\n"
         val profile = Profile("shared-safety", "Fixture", "socks5", "vpn", text)
         val draft = EditorDraft(profile)
-        val model = AppModel(ApplicationProvider.getApplicationContext())
-        model.editorDraft = draft
         val sentinel = "sentinel/path?token=secret"
         var fallback = ""
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            // The activity's own model (contract D5: one production store behind it).
+            val model = scenario.loadedActivityModel()
             scenario.onActivity { activity ->
                 fallback = activity.getString(R.string.editor_parameters)
+                model.editorDraft = draft
                 activity.setContent {
                     androidx.compose.material3.MaterialTheme {
                         ProfileEditor(model, profile, false, null, VpnState()) {}
