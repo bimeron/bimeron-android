@@ -97,14 +97,25 @@ class TrustedHostKeysTest {
         assertEquals(listOf("$id.known_hosts"), root.list()!!.toList())
     }
 
-    @Test fun damagedLinesAreDroppedNotPassedToCore() {
-        root.mkdirs()
-        file().writeText("# note\n\n${line()}\n@revoked * ssh-ed25519 AAAA\ngarbage\n${line()}\r\n|1|x|y ssh-rsa AAAA\n")
+    @Test fun anyInvalidLineMakesTheStoreUnreadable() {
+        store.append(id, line())
+        val good = file().readText()
+        for (bad in listOf("# note\n", "@revoked * ssh-ed25519 AAAA\n", "garbage\n", "${line()}\r\n", "|1|x|y ssh-rsa AAAA\n",
+            " ${line()}\n", "${line("other.example:22", seed = 2)} comment\n")) {
+            file().writeText(good + bad)
+            for (action in listOf<() -> Unit>({ store.read(id) }, { store.count(id) }, { store.append(id, line("n.example:22", seed = 9)) })) {
+                try { action(); fail(bad) } catch (_: IOException) {}
+            }
+            // Nothing was rewritten or dropped.
+            assertEquals(good + bad, file().readText())
+        }
+        // Blank lines and duplicates are harmless and stay readable.
+        file().writeText(good + "\n" + good)
         assertArrayEquals(bytes(line()), store.read(id))
-        assertEquals(1, store.count(id))
-        assertEquals(TrustedHostKeys.Append.DUPLICATE, store.append(id, line()))
-        store.append(id, line("b.example:22", seed = 2))
-        assertEquals(bytes(line(), line("b.example:22", seed = 2)).decodeToString(), file().readText())
+        // Forget always works, so the user can recover.
+        file().writeText("garbage\n")
+        store.forget(id)
+        assertEquals(0, store.count(id))
     }
 
     @Test fun appendRejectsLinesThatAreNotOfferLines() {

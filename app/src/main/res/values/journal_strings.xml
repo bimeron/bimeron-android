@@ -15,5 +15,4 @@
     <string name="journal_vpn_failed">VPN error</string>
     <string name="journal_vpn_failed_detail">VPN error: %1$s</string>
     <string name="journal_trusted_host_key_not_saved">Trusted server key was not saved; it will be confirmed again on the next connection</string>
-    <string name="journal_trusted_host_keys_not_loaded">Trusted server keys could not be loaded</string>
 </resources>

@@ -34,52 +34,86 @@ class HostKeyOptInTest {
         val token = attempt()
         val reads = mutableListOf<UUID>()
         val stored = HostKeyFixtures.line().toByteArray()
-        assertArrayEquals(stored, trustedHostKeysFor(ssh, token, read = { reads += it; stored }, warn = { fail() }))
+        assertArrayEquals(stored, trustedHostKeysFor(ssh, token, read = { reads += it; stored }))
         // Empty store: still an opt-in (empty, not null), so an unknown host is offered.
-        val empty = trustedHostKeysFor(sshType, token, read = { ByteArray(0) }, warn = { fail() })
+        val empty = trustedHostKeysFor(sshType, token, read = { ByteArray(0) })
         assertArrayEquals(ByteArray(0), empty)
         assertEquals(listOf(UUID.fromString(PROFILE)), reads)
         // Positively non-SSH profiles do not opt in and are not read.
-        assertNull(trustedHostKeysFor(shadowsocks, token, read = { fail(); ByteArray(0) }, warn = { fail() }))
+        assertNull(trustedHostKeysFor(shadowsocks, token, read = { fail(); ByteArray(0) }))
     }
 
-    @Test fun unreadableStoreOptsInWithNoKeysAndWarns() = runBlocking {
+    private fun assertFailsWith(code: VpnErrorCode, action: () -> Unit) {
+        try { action(); fail("expected $code") } catch (e: BimeronVpnService.SessionFailure) { assertEquals(code, e.code) }
+    }
+
+    @Test fun unreadableStoreFailsClosedWithoutOptingIn() = runBlocking {
         val token = attempt()
-        var warned = 0
-        val bytes = trustedHostKeysFor(ssh, token, read = { throw IOException("synthetic") }, warn = { warned++ })
-        assertArrayEquals(ByteArray(0), bytes)
-        assertEquals(1, warned)
+        // Never an empty opt-in: a changed key for a trusted host would then be offered as a new server.
+        for (failure in listOf<Exception>(IOException("synthetic"), IllegalArgumentException("bad line"), SecurityException())) {
+            try {
+                trustedHostKeysFor(ssh, token, read = { throw failure })
+                fail()
+            } catch (e: BimeronVpnService.SessionFailure) {
+                assertEquals(VpnErrorCode.TRUSTED_KEYS_UNREADABLE, e.code)
+            }
+        }
+    }
+
+    @Test fun storeWithAnInvalidLineIsUnreadableEndToEnd() = runBlocking<Unit> {
+        val base = java.io.File(kotlin.io.path.createTempDirectory("tofu").toFile().canonicalFile, "root").apply { mkdirs() }
+        val store = ProfileStore(null, java.io.File(base, "profiles").apply { mkdirs() }, SshProfileResources(java.io.File(base, "ssh-resources"))) {}
+        val saved = store.save(Conf.fromKey("SSH", "ssh://user@ssh.example.com:2222"))
+        val id = UUID.fromString(saved.id)
+        store.rememberTrustedHostKey(id, HostKeyFixtures.line())
+        java.io.File(base, "trusted-hosts/$id.known_hosts").appendText("garbage\n")
+        val input = store.readForSession(saved.id) { true }
+        val token = attempt()
+        try {
+            trustedHostKeysFor(input, token, read = store::trustedHostKeys)
+            fail()
+        } catch (e: BimeronVpnService.SessionFailure) {
+            assertEquals(VpnErrorCode.TRUSTED_KEYS_UNREADABLE, e.code)
+        }
+        // Forget is the recovery: afterwards the profile opts in with no keys again.
+        store.forgetTrustedHostKeys(id)
+        assertArrayEquals(ByteArray(0), trustedHostKeysFor(input, token, read = store::trustedHostKeys))
+        base.parentFile.deleteRecursively()
     }
 
     @Test fun staleTokenNeverReads() = runBlocking {
         val token = attempt()
         VpnLive.nextAttempt()
         try {
-            trustedHostKeysFor(ssh, token, read = { fail(); ByteArray(0) }, warn = {})
+            trustedHostKeysFor(ssh, token, read = { fail(); ByteArray(0) })
             fail()
         } catch (_: CancellationException) {}
         // A token superseded during the read is rejected after it.
         val current = attempt()
         try {
-            trustedHostKeysFor(ssh, current, read = { VpnLive.nextAttempt(); ByteArray(0) }, warn = {})
+            trustedHostKeysFor(ssh, current, read = { VpnLive.nextAttempt(); ByteArray(0) })
             fail()
         } catch (_: CancellationException) {}
     }
 
     @Test fun optInAlwaysPrecedesStart() {
         val calls = mutableListOf<String>()
-        startCoreSession(byteArrayOf(1), optIn = { calls += "optIn:${it.size}" }, start = { calls += "start" }, warn = { calls += "warn" })
+        startCoreSession(byteArrayOf(1), optIn = { calls += "optIn:${it.size}" }, start = { calls += "start" })
         assertEquals(listOf("optIn:1", "start"), calls)
         calls.clear()
-        startCoreSession(ByteArray(0), optIn = { calls += "optIn:${it.size}" }, start = { calls += "start" }, warn = { calls += "warn" })
+        startCoreSession(ByteArray(0), optIn = { calls += "optIn:${it.size}" }, start = { calls += "start" })
         assertEquals(listOf("optIn:0", "start"), calls)
         calls.clear()
-        startCoreSession(null, optIn = { calls += "optIn" }, start = { calls += "start" }, warn = { calls += "warn" })
+        startCoreSession(null, optIn = { calls += "optIn" }, start = { calls += "start" })
         assertEquals(listOf("start"), calls)
-        calls.clear()
-        // Core refusing the stored lines starts without the opt-in: known_hosts-only, never more trust.
-        startCoreSession(byteArrayOf(1), optIn = { calls += "optIn"; throw IllegalStateException() }, start = { calls += "start" }, warn = { calls += "warn" })
-        assertEquals(listOf("optIn", "warn", "start"), calls)
+    }
+
+    @Test fun coreRefusingTheStoredLinesNeverStarts() {
+        val calls = mutableListOf<String>()
+        assertFailsWith(VpnErrorCode.TRUSTED_KEYS_UNREADABLE) {
+            startCoreSession(byteArrayOf(1), optIn = { calls += "optIn"; throw IllegalStateException() }, start = { calls += "start" })
+        }
+        assertEquals(listOf("optIn"), calls)
     }
 
     private class Recorder { val lines = mutableListOf<String>() }
@@ -173,6 +207,8 @@ class HostKeyOptInTest {
             "ssh_host_key_ca_required" to VpnErrorCode.HOST_KEY_CA_REQUIRED,
             "ssh_known_hosts_missing" to VpnErrorCode.SSH_KNOWN_HOSTS_MISSING,
         )
+        // The new fixed codes are never inferred from Core text.
+        assertTrue(VpnErrorCode.TRUSTED_KEYS_UNREADABLE !in expected.values && VpnErrorCode.SSH_FILE_OUTSIDE_APP !in expected.values)
         for ((lastError, code) in expected) for (history in AuthHistory.entries) for (state in listOf("failed", "disconnected", "reconnecting")) {
             assertEquals("$lastError/$history/$state", code, coreFailureCode(state, lastError, history))
         }

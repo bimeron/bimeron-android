@@ -37,6 +37,10 @@ enum class VpnErrorCode(@StringRes val messageRes: Int) {
     HOST_KEY_CA_REQUIRED(R.string.vpn_error_host_key_ca_required),
     /** An SSH session had neither an imported known_hosts file nor the accept-new opt-in. */
     SSH_KNOWN_HOSTS_MISSING(R.string.vpn_error_ssh_known_hosts_missing),
+    /** The profile's stored trusted host keys could not be read or Core refused them; nothing was dialed. */
+    TRUSTED_KEYS_UNREADABLE(R.string.vpn_error_trusted_keys_unreadable),
+    /** An SSH file reference points outside the profile's imported files (decision 8); nothing was dialed. */
+    SSH_FILE_OUTSIDE_APP(R.string.vpn_error_ssh_file_outside_app),
     RECOVERY_NEEDS_USER(R.string.vpn_error_recovery_needs_user),
     SSCONF_NETWORK_UNAVAILABLE(R.string.vpn_error_ssconf_network_unavailable),
     SSCONF_FETCH_FAILED(R.string.vpn_error_ssconf_fetch_failed),
@@ -574,7 +578,7 @@ private fun Char.isGoSpace(): Boolean = this in '\u0009'..'\u000d' || this == ' 
  * (`core: internal/config/config.go:530`). Stripping any run of both is a superset, so a value Core
  * would treat as `ssh://` is never missed (conservative).
  */
-private fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
+internal fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
 
 /** Allowlist name of the profile's protocol, or null when it cannot be determined without doubt. */
 private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String? {
@@ -683,14 +687,16 @@ internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureStat
  * Accept-new host-key opt-in bytes for [input] (core ADR 0035), or null for no opt-in. Every possibly SSH
  * profile opts in (the conservative [sshCapable] classification), even with no stored keys, so an unknown
  * host is offered instead of failing; an imported KnownHostsFile stays trusted alongside. Runs before the
- * native session is created, guarded by [token] on both sides. An unreadable store opts in with no keys:
- * known hosts then prompt again, which never trusts anything silently.
+ * native session is created, guarded by [token] on both sides.
+ *
+ * Fails closed: if the store cannot be read (I/O error, symlink, or any line that is not a valid offer line)
+ * the attempt ends with [VpnErrorCode.TRUSTED_KEYS_UNREADABLE] before any native session. Opting in with no
+ * keys instead would turn a changed key for a trusted host into a "New server" offer. Forget recovers.
  */
 internal suspend fun trustedHostKeysFor(
     input: SessionInput,
     token: Long,
     read: suspend (java.util.UUID) -> ByteArray,
-    warn: () -> Unit,
     sshCapable: (SessionInput) -> Boolean = ::mayNeedInteractiveAuth,
 ): ByteArray? {
     ensureSessionAttempt(token)
@@ -700,21 +706,23 @@ internal suspend fun trustedHostKeysFor(
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
-        warn()
-        ByteArray(0)
+        throw BimeronVpnService.SessionFailure(VpnErrorCode.TRUSTED_KEYS_UNREADABLE)
     }
     ensureSessionAttempt(token)
     return bytes
 }
 
 /**
- * Starts a created session: the host-key opt-in, when [trusted] is set, always precedes [start]. A rejected
- * opt-in (Core refused the stored lines) is journaled and the session starts without it, which keeps Core's
- * known_hosts-only verification and never trusts more.
+ * Starts a created session: the host-key opt-in, when [trusted] is set, always precedes [start]. If Core
+ * refuses the stored lines the attempt fails with [VpnErrorCode.TRUSTED_KEYS_UNREADABLE] and [start] is never
+ * called. (Starting without the opt-in could not prompt, since Core then refuses unknown hosts or reports
+ * `ssh_known_hosts_missing`, but it would hide the actual cause and its remedy, Forget.)
  */
-internal fun startCoreSession(trusted: ByteArray?, optIn: (ByteArray) -> Unit, start: () -> Unit, warn: () -> Unit) {
+internal fun startCoreSession(trusted: ByteArray?, optIn: (ByteArray) -> Unit, start: () -> Unit) {
     if (trusted != null) {
-        try { optIn(trusted) } catch (e: CancellationException) { throw e } catch (_: Exception) { warn() }
+        try { optIn(trusted) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { throw BimeronVpnService.SessionFailure(VpnErrorCode.TRUSTED_KEYS_UNREADABLE) }
     }
     start()
 }

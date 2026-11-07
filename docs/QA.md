@@ -262,7 +262,7 @@ imported known_hosts unless a step says otherwise, and compare fingerprints with
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. JVM coverage:
 `SshHostKeyOfferTest`, `SshHostKeyDialogTest`, `TrustedHostKeysTest`,
 `TrustedHostKeysSweepTest`, `TrustedHostKeysSectionTest`, `HostKeyOptInTest`,
-`NoExternalStorageTest`; JNI: `HostKeyOptInNativeTest`.
+`NoExternalStorageTest`, `SshFileGuardTest`; JNI: `HostKeyOptInNativeTest`.
 
 1. First connect: the "New server" dialog shows `host:port`, the key type and
    the full `SHA256:` fingerprint in monospace, matching the server. A screenshot
@@ -288,3 +288,8 @@ imported known_hosts unless a step says otherwise, and compare fingerprints with
    profile" starts with no trusted keys.
 9. The journal shows no host, fingerprint or key text; at most the fixed
    "Trusted server key was not saved" warning.
+10. Damage the store (`adb shell run-as org.bimeron.app sh -c 'echo x >> files/trusted-hosts/<uuid>.known_hosts'`):
+    the next connect fails with `TRUSTED_KEYS_UNREADABLE` and no dialog; the editor shows "Trusted server keys
+    could not be read"; Forget, then connect offers the server again.
+11. In Source config set `IdentityFile = /sdcard/.ssh/id_ed25519` (or an `ssh://...?known_hosts=/sdcard/...`
+    key): connecting fails with `SSH_FILE_OUTSIDE_APP` and nothing is dialed.

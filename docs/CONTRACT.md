@@ -31,14 +31,28 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   sides, and calls `Session.acceptNewHostKeys(bytes)` once, before `start`. SSH-capable is the recovery
   classification `mayNeedInteractiveAuth` (SSH, `Type = ssh`, any `ssh://` value, unknown or unparsable);
   positively non-SSH profiles do not opt in. The call is made even with no stored keys, so an unknown host is
-  offered. An imported `KnownHostsFile` stays trusted alongside; Core trusts the union. Android sessions use
-  only files imported into app storage: no storage permission is declared and no `/sdcard` or `~/.ssh` path is
-  read or passed to Core. Core enforces the same for every Android session (core ADR 0036): no default identity
-  scan, no `~/.ssh/known_hosts` fallback, no `~` paths, no SSH agent; without an imported known_hosts and without
-  the opt-in the attempt fails with `ssh_known_hosts_missing` before dialing.
-- If the store cannot be read the session opts in with no keys and journals a fixed WARN. If Core rejects the
-  bytes the session starts without the opt-in (known_hosts-only verification) and journals the same WARN.
-  Neither path trusts anything silently.
+  offered. An imported `KnownHostsFile` stays trusted alongside; Core trusts the union.
+- SSH files (decision 8). What is enforced, and where:
+  - **Service (every start, before any native session):** `requireSshFilesInsideApp` (`SshFileGuard.kt`)
+    collects every SSH file reference Core would open: `[AccessKey]` `IdentityFile`/`KnownHostsFile` and the
+    `identity`/`known_hosts` query parameters of any `ssh://` value (keys case-insensitive, every value,
+    percent-decoded). Each must be the right kind of file under this profile's imports,
+    `<filesRoot>/ssh-resources/profiles/<profile uuid>/<generation uuid>/{identity|known_hosts}`, with
+    `filesRoot` resolved as `ProfileStore` resolves it. Anything else (`/sdcard/...`, `/storage/...`, `~`,
+    relative paths, another profile's or the wrong kind of file, a malformed query) fails the attempt with
+    `SSH_FILE_OUTSIDE_APP`; nothing is dialed.
+  - **Core (every Android session, core ADR 0036):** no default identity scan, no `~/.ssh/known_hosts`
+    fallback, `~` paths refused, no SSH agent; without an imported known_hosts and without the opt-in the attempt
+    fails with `ssh_known_hosts_missing` before dialing.
+  - **Manifest:** no storage permission is requested (checked on the processed merged manifest), and the app
+    reads SSH files only through the Storage Access Framework import.
+  - **Not yet:** the SSH form and `ProfileStore.validate` still accept a typed absolute path at save time; such
+    a profile saves but cannot connect.
+- Trusted keys fail closed. If the store cannot be read (I/O error, symlink, oversized, or any line that is not
+  a valid offer line) the attempt fails with `TRUSTED_KEYS_UNREADABLE` before any native session; it never opts
+  in with no keys, which would offer a changed key as a new server. If Core rejects the bytes the attempt fails
+  with the same code and `start` is never called. The profile editor shows "Trusted server keys could not be
+  read" with Forget enabled, which recovers.
 - `pendingAuth` kind `host_key` is parsed strictly by `SshAuthenticationController.parse`: 48-hex ids;
   `host` from Core's literal alphabet as `host:port` (IPv6 bracketed); a known key type; `SHA256:` plus 43
   unpadded base64 characters equal to the digest of the key in the line; and a `knownHostsLine` of exactly
@@ -55,20 +69,22 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   limit). A failure or a full file leaves the session running (Core remembers the key for its reconnects) and
   journals a fixed WARN.
 - Storage: `filesDir/trusted-hosts/<uuid>.known_hosts`, directory `0700`, file `0600`, one plain line per key,
-  replaced atomically (tmp, fsync, `ATOMIC_MOVE`, directory fsync). It is a separate top-level tree, outside
-  `profiles/`, `ssconf/` and `ssh-resources/`. Every access holds the store lock and takes no other lock;
+  replaced atomically (tmp, fsync, `ATOMIC_MOVE`, directory fsync). Reading never drops lines: any invalid line
+  makes the file unreadable (above). It is a separate top-level tree, outside `profiles/`, `ssconf/` and
+  `ssh-resources/`. Every access holds the store lock and takes no other lock;
   `rememberTrustedHostKey` must never be called with the `VpnLive.gate` monitor held (lock order guard →
-  draft → resources → gate) and fails closed if it is. Reads return only lines that are valid offer lines, so a
-  damaged file cannot make Core reject the opt-in. `compareAndDelete` removes the file best-effort under the
+  draft → resources → gate) and fails closed if it is. `compareAndDelete` removes the file best-effort under the
   store lock. The fail-closed startup sweep also inventories `trusted-hosts/`: it deletes `<uuid>.known_hosts`
   files without a `profiles/<uuid>.conf` and leftover `<uuid>.known_hosts.tmp-*` files, and any other entry,
   directory or symlink makes it delete nothing at all. A new profile, including "Save as new profile", starts
   with no trusted keys; a deleted profile counts 0 and Forget does nothing.
 - The profile editor's SSH section shows "Trusted server keys: N" with Forget (after a confirmation), which
-  deletes the file immediately; it is not part of Save.
+  deletes the file immediately; it is not part of Save. The count is read off Main when shown, on resume and on
+  every VPN state change.
 - `Status.LastError` mapping, ahead of the auth-history heuristic: `ssh_host_key_mismatch` →
   `HOST_KEY_MISMATCH`, `ssh_host_key_rejected` → `AUTH_CANCELLED`, `ssh_host_key_unanswered` →
   `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_host_key_ca_required` →
   `HOST_KEY_CA_REQUIRED` (the imported known_hosts uses `@cert-authority`; forgetting app-owned keys does not
-  help, so it has its own message), `ssh_known_hosts_missing` → `SSH_KNOWN_HOSTS_MISSING`. A changed key is never offered and never accepted. Recovery still skips SSH-capable
+  help, so it has its own message), `ssh_known_hosts_missing` → `SSH_KNOWN_HOSTS_MISSING`. The app's own
+  fixed codes `TRUSTED_KEYS_UNREADABLE` and `SSH_FILE_OUTSIDE_APP` are raised before Core runs. A changed key is never offered and never accepted. Recovery still skips SSH-capable
   profiles.

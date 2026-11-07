@@ -28,9 +28,9 @@ internal class TrustedHostKeys(root: File) {
     internal var publish: (File, File) -> Unit = { source, target -> Files.move(source.toPath(), target.toPath(), ATOMIC_MOVE) }
 
     /**
-     * The stored lines for [id] (empty when none), one per line, at most [MAX_BYTES]. Only lines that pass
-     * [SshAuthenticationController.validKnownHostsLine] are returned, so a damaged file loses only its
-     * damaged lines and can never make Core reject the whole opt-in.
+     * The stored lines for [id] (empty when none), one per line, at most [MAX_BYTES]. Fails closed: a file
+     * with any line that is not a valid offer line ([SshAuthenticationController.validKnownHostsLine]) is a
+     * read failure, never silently shortened, because a dropped line would turn its host into a new one.
      */
     fun read(id: UUID): ByteArray = safe { valid(readFile(file(id)) ?: ByteArray(0)).joinToString("") { "$it\n" }.toByteArray(Charsets.US_ASCII) }
 
@@ -145,10 +145,12 @@ internal class TrustedHostKeys(root: File) {
         private val PRIVATE_DIRECTORY = PosixFilePermissions.fromString("rwx------")
         private val PRIVATE_FILE = PosixFilePermissions.fromString("rw-------")
 
-        /** The distinct valid lines of a stored file, in order. */
-        private fun valid(bytes: ByteArray): List<String> =
-            String(bytes, Charsets.ISO_8859_1).split('\n').map { it.removeSuffix("\r") }
-                .filter(SshAuthenticationController::validKnownHostsLine).distinct()
+        /** The distinct lines of a stored file, in order; throws unless every non-empty line is valid. */
+        private fun valid(bytes: ByteArray): List<String> {
+            val lines = String(bytes, Charsets.ISO_8859_1).split('\n').filter { it.isNotEmpty() }
+            require(lines.all(SshAuthenticationController::validKnownHostsLine))
+            return lines.distinct()
+        }
     }
 }
 

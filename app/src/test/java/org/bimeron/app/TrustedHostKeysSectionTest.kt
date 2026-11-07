@@ -8,6 +8,8 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.test.core.app.ApplicationProvider
 import java.io.IOException
 import java.util.UUID
@@ -70,6 +72,52 @@ class TrustedHostKeysSectionTest {
         compose.waitForIdle()
         assertEquals(1, failures)
         compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 2)).assertExists()
+    }
+
+    @Test fun unreadableStoreOffersForgetToRecover() {
+        var unreadable = true
+        compose.setContent {
+            MaterialTheme {
+                TrustedHostKeysSection(id.toString(), count = { if (unreadable) throw IOException("bad line") else 0 },
+                    forget = { forgotten += it; unreadable = false }, enabled = true, onFailure = { failures++ })
+            }
+        }
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_unreadable)).assertExists()
+        compose.onNode(hasContentDescription(context.getString(R.string.ssh_trusted_host_keys_forget_description))).assertIsEnabled().performClick()
+        compose.onNode(confirmButton).performClick()
+        compose.waitForIdle()
+        assertEquals(listOf(id), forgotten)
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 0)).assertExists()
+    }
+
+    @Test fun countReloadsWhenRefreshKeyChanges() {
+        var refresh by androidx.compose.runtime.mutableStateOf("connecting")
+        compose.setContent {
+            MaterialTheme { TrustedHostKeysSection(id.toString(), count = { stored }, forget = {}, enabled = true, onFailure = {}, refresh = refresh) }
+        }
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 2)).assertExists()
+        stored = 3
+        refresh = "connected"
+        compose.waitForIdle()
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 3)).assertExists()
+    }
+
+    @Test fun countReloadsOnResume() {
+        val owner = object : androidx.lifecycle.LifecycleOwner {
+            val registry = androidx.lifecycle.LifecycleRegistry(this).apply { currentState = androidx.lifecycle.Lifecycle.State.RESUMED }
+            override val lifecycle: androidx.lifecycle.Lifecycle get() = registry
+        }
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.lifecycle.compose.LocalLifecycleOwner provides owner) {
+                MaterialTheme { TrustedHostKeysSection(id.toString(), count = { stored }, forget = {}, enabled = true, onFailure = {}) }
+            }
+        }
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 2)).assertExists()
+        stored = 5
+        compose.runOnUiThread { owner.registry.currentState = androidx.lifecycle.Lifecycle.State.STARTED }
+        compose.runOnUiThread { owner.registry.currentState = androidx.lifecycle.Lifecycle.State.RESUMED }
+        compose.waitForIdle()
+        compose.onNodeWithText(context.getString(R.string.ssh_trusted_host_keys_count, 5)).assertExists()
     }
 
     @Test fun lockedEditorAndEmptyStoreDisableForget() {
