@@ -42,6 +42,8 @@ sealed interface EditorConflict {
     class Changed(val latest: StoredProfile, val mine: String, val merge: ProfileMerge.Result) : EditorConflict
     /** The stored profile was deleted ([deleted]) or cannot be read: only saving as a new profile is offered. */
     data class Gone(val deleted: Boolean) : EditorConflict
+    /** A delete conflicted because the profile changed since the editor opened: confirm "Delete anyway". */
+    data object ChangedBeforeDelete : EditorConflict
 }
 
 /**
@@ -341,7 +343,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     draft.conflict?.let { conflict ->
         // Operation failures use the same protected-profile wording as the editor's message line.
         val failure = saveError?.takeIf { it !in conflictMessages }?.let { if (protected) stringResource(R.string.protocol_form_failed) else it }
-        EditorConflictDialog(model, draft, conflict, locked, failure) { leave() }
+        EditorConflictDialog(model, draft, conflict, locked, failure, vpn.activeProfileId == profile.id) { leave() }
     }
 }
 

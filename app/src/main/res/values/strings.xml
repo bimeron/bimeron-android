@@ -143,5 +143,11 @@
     <string name="profile_saved_as_new">Saved as a new profile</string>
     <string name="profile_conflict_not_chosen">Not chosen</string>
     <string name="profile_conflict_invalid">The merged profile is not valid. Choose other versions or reload the latest.</string>
-    <string name="profile_conflict_comments">Some comment edits are not kept in the merged version. Check the raw config after applying.</string>
+    <string name="profile_conflict_whole_comments">Your comment edits cannot be merged into the saved version. Keep one whole version, or save yours as a new profile.</string>
+    <string name="profile_conflict_whole_unparsable">One of the versions cannot be merged setting by setting. Keep one whole version, or save yours as a new profile.</string>
+    <string name="profile_delete_changed_title">Profile was changed</string>
+    <string name="profile_delete_changed_message">This profile was changed elsewhere after you opened it. Delete it anyway?</string>
+    <string name="profile_delete_anyway">Delete anyway</string>
+    <string name="profile_copy_name">%1$s (copy)</string>
+    <string name="profile_copy_name_numbered">%1$s (copy %2$d)</string>
 </resources>

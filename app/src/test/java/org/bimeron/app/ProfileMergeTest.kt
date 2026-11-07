@@ -221,15 +221,59 @@ class ProfileMergeTest {
         assertEquals(broken, identical.resolve(emptyMap()))
     }
 
-    @Test fun mergedTextKeepsTheirsLayoutAndFlagsMineCommentEdits() {
+    @Test fun mergedTextKeepsTheirsLayoutAndComments() {
         val commented = base.replace("[Interface]", "# theirs comment\n[Interface]")
-        val mine = edit(base) { set("Interface", "MTU", "1400") }.replace("[Routing]", "# my note\n[Routing]")
-        val result = ProfileMerge.merge(base, mine, commented)
-        assertTrue(result.commentsMayBeLost)
+        val result = ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, commented)
+        assertNull(result.wholeTextReason)
         val merged = result.resolve(emptyMap())
         assertTrue(merged.contains("# theirs comment"))
-        assertFalse(merged.contains("# my note"))
-        assertFalse(ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, commented).commentsMayBeLost)
+        assertEquals("1400", doc(merged).value("Interface", "MTU"))
+    }
+
+    @Test fun commentOnlyChangeInMineEscalatesToWholeText() {
+        val mine = base.replace("[Routing]", "# my note\n[Routing]")
+        val theirs = edit(base) { set("Interface", "MTU", "1500") }
+        val result = ProfileMerge.merge(base, mine, theirs)
+        assertEquals(WholeTextReason.COMMENTS, result.wholeTextReason)
+        assertEquals(MergeField.WholeText, result.conflicts.single().field)
+        assertEquals(mine, result.resolve(mapOf(MergeField.WholeText to MergeChoice.MINE)))
+        assertEquals(theirs, result.resolve(mapOf(MergeField.WholeText to MergeChoice.THEIRS)))
+        // Deleting or editing a comment counts the same as adding one.
+        val withComment = base.replace("[Routing]", "# old note\n[Routing]")
+        val deleted = ProfileMerge.merge(withComment, base, edit(withComment) { set("Interface", "MTU", "1500") })
+        assertEquals(WholeTextReason.COMMENTS, deleted.wholeTextReason)
+        val edited = ProfileMerge.merge(withComment, withComment.replace("# old note", "# new note"), edit(withComment) { set("Interface", "MTU", "1500") })
+        assertEquals(WholeTextReason.COMMENTS, edited.wholeTextReason)
+        // The same comment edit on both sides is already in theirs; a moved comment is not an edit.
+        assertNull(ProfileMerge.merge(base, mine, mine.replace("MTU = 1420", "MTU = 1500")).wholeTextReason)
+        val moved = withComment.replace("# old note\n[Routing]", "[Routing]").replace("[Interface]", "# old note\n[Interface]")
+        assertNull(ProfileMerge.merge(withComment, moved, edit(withComment) { set("Interface", "MTU", "1500") }).wholeTextReason)
+    }
+
+    @Test fun commentChangesCarriedWithMineBlocksDoNotEscalate() {
+        val theirs = edit(base) { set("Interface", "MTU", "1500") }
+        val mineRule = base.replace("[Rule]\nDomain = example.org", "[Rule]\n# rule note\nDomain = example.org")
+        val rules = ProfileMerge.merge(base, mineRule, theirs)
+        assertNull(rules.wholeTextReason)
+        assertTrue(rules.resolve(emptyMap()).contains("# rule note"))
+        val mineSection = "$base\n[ShadowTLS]\n# tls note\nServerName = example.org\n"
+        val section = ProfileMerge.merge(base, mineSection, theirs)
+        assertNull(section.wholeTextReason)
+        assertTrue(section.resolve(emptyMap()).contains("# tls note"))
+        assertEquals("example.org", doc(section.resolve(emptyMap())).value("ShadowTLS", "ServerName"))
+        // A rule conflict resolved as mine would keep the comment, so it stays a field-level conflict.
+        val conflicting = ProfileMerge.merge(base, edit(mineRule) { editRule(0, "Action", "block") }, edit(base) { addRule() })
+        assertNull(conflicting.wholeTextReason)
+        assertEquals(MergeField.Rules, conflicting.conflicts.single().field)
+    }
+
+    @Test fun theirsCommentChangesAloneNeverEscalate() {
+        val theirs = base.replace("[Interface]", "# theirs comment\n[Interface]").replace("[Rule]\nDomain", "[Rule]\n# their rule note\nDomain")
+        val result = ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, theirs)
+        assertNull(result.wholeTextReason)
+        assertTrue(result.conflicts.isEmpty())
+        val merged = result.resolve(emptyMap())
+        assertTrue(merged.contains("# theirs comment") && merged.contains("# their rule note"))
     }
 
     @Test fun secretsAreMaskedInThePresentationModelUntilRevealed() {
@@ -304,16 +348,18 @@ class ProfileMergeTest {
         assertEquals(same, result.resolve(emptyMap()))
     }
 
-    @Test fun theirsCosmeticRuleCommentsReplacedByMineAreFlagged() {
+    /** Decision: theirs' rule comment edits are not dropped silently when mine's rules change; the list conflicts. */
+    @Test fun theirsRuleCommentEditAgainstMineRuleChangeConflicts() {
         val mine = edit(base) { editRule(1, "Action", "proxy") }
         val theirs = base.replace("[Rule]\nDomain = example.org", "[Rule]\n# their note\nDomain = example.org")
         val result = ProfileMerge.merge(base, mine, theirs)
-        assertTrue(result.conflicts.isEmpty())
-        assertFalse(result.resolve(emptyMap()).contains("# their note"))
-        assertTrue(result.commentsMayBeLost)
-        // Theirs' rule change kept, or no comment involved: nothing is flagged.
-        assertFalse(ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, theirs).commentsMayBeLost)
-        assertFalse(ProfileMerge.merge(base, mine, base.replace("Domain = example.org", "Domain=example.org")).commentsMayBeLost)
+        assertNull(result.wholeTextReason)
+        assertEquals(MergeField.Rules, result.conflicts.single().field)
+        assertTrue(result.resolve(mapOf(MergeField.Rules to MergeChoice.THEIRS)).contains("# their note"))
+        assertEquals("proxy", doc(result.resolve(mapOf(MergeField.Rules to MergeChoice.MINE))).rules[1].values()["Action"])
+        // A reformat without comment edits in theirs still lets mine's rules win.
+        val reformatted = ProfileMerge.merge(base, mine, base.replace("Domain = example.org", "Domain=example.org"))
+        assertTrue(reformatted.conflicts.isEmpty())
     }
 
     @Test fun mergeLinesNeverPrintTheirValues() {

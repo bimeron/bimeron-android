@@ -142,5 +142,11 @@
     <string name="profile_saved_as_new">Сохранено как новый профиль</string>
     <string name="profile_conflict_not_chosen">Не выбрано</string>
     <string name="profile_conflict_invalid">Объединённый профиль недействителен. Выберите другие версии или загрузите последнюю.</string>
-    <string name="profile_conflict_comments">Некоторые правки комментариев не сохранились в объединённой версии. Проверьте исходный конфиг после применения.</string>
+    <string name="profile_conflict_whole_comments">Ваши правки комментариев нельзя объединить с сохранённой версией. Оставьте одну версию целиком или сохраните свою как новый профиль.</string>
+    <string name="profile_conflict_whole_unparsable">Одну из версий нельзя объединить по отдельным параметрам. Оставьте одну версию целиком или сохраните свою как новый профиль.</string>
+    <string name="profile_delete_changed_title">Профиль был изменён</string>
+    <string name="profile_delete_changed_message">Профиль изменили в другом месте после того, как вы его открыли. Всё равно удалить?</string>
+    <string name="profile_delete_anyway">Всё равно удалить</string>
+    <string name="profile_copy_name">%1$s (копия)</string>
+    <string name="profile_copy_name_numbered">%1$s (копия %2$d)</string>
 </resources>

@@ -27,16 +27,29 @@ import androidx.compose.ui.window.DialogProperties
  * The edit-conflict panel over the editor. For a changed profile it lists the conflicting fields with
  * mine/theirs choices (secrets masked until revealed per field) and applies the merge locally; nothing
  * is saved until the user saves again. For a deleted or unreadable profile only save-as-new is offered.
+ * After a delete conflict it asks to delete anyway ([active]: the profile's VPN would be stopped first).
  * [failure] is the latest operation error to show inside the panel, if any.
  */
 @Composable internal fun EditorConflictDialog(model: AppModel, draft: EditorDraft, conflict: EditorConflict, locked: Boolean,
-                                              failure: String?, onSavedAsNew: () -> Unit) {
+                                              failure: String?, active: Boolean, onClosed: () -> Unit) {
     val context = LocalContext.current
     var confirmReload by remember(conflict) { mutableStateOf(false) }
-    val saveAsNew = { model.saveAsNew(context.getString(R.string.profile_saved_as_new)) { onSavedAsNew() }; Unit }
+    val saveAsNew = { model.saveAsNew(context.getString(R.string.profile_saved_as_new)) { onClosed() }; Unit }
     val properties = DialogProperties(dismissOnClickOutside = false)
     val failureText: @Composable () -> Unit = { failure?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
     when (conflict) {
+        EditorConflict.ChangedBeforeDelete -> AlertDialog(
+            onDismissRequest = { if (!locked) draft.conflict = null }, properties = properties,
+            title = { Text(stringResource(R.string.profile_delete_changed_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(R.string.profile_delete_changed_message))
+                    if (active) Text(stringResource(R.string.delete_active_warning))
+                    failureText()
+                }
+            },
+            confirmButton = { TextButton(onClick = { model.deleteAnyway { onClosed() } }, enabled = !locked) { Text(stringResource(R.string.profile_delete_anyway)) } },
+            dismissButton = { TextButton(onClick = { draft.conflict = null }, enabled = !locked) { Text(stringResource(R.string.cancel)) } })
         is EditorConflict.Gone -> AlertDialog(
             onDismissRequest = { if (!locked) draft.conflict = null }, properties = properties,
             title = { Text(stringResource(if (conflict.deleted) R.string.profile_conflict_deleted_title else R.string.profile_conflict_unreadable_title)) },
@@ -61,7 +74,9 @@ import androidx.compose.ui.window.DialogProperties
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(stringResource(R.string.profile_conflict_message))
                         Text(stringResource(R.string.profile_conflict_auto_merged, merge.autoMerged), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (merge.commentsMayBeLost) Text(stringResource(R.string.profile_conflict_comments), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        merge.wholeTextReason?.let { reason ->
+                            Text(stringResource(if (reason == WholeTextReason.COMMENTS) R.string.profile_conflict_whole_comments else R.string.profile_conflict_whole_unparsable))
+                        }
                         if (merge.conflicts.isEmpty()) Text(stringResource(R.string.profile_conflict_none))
                         merge.conflicts.forEach { item ->
                             key(item.field) {

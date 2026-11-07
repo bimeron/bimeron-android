@@ -37,16 +37,23 @@ class EditorConflictRebaseTest {
         var rebaseHook: suspend () -> Unit = {}
         var readHook: suspend () -> Unit = {}
         var done = 0
+        var stops = 0
         val commits = EditorCommits { store }
         val model = AppModelOperations(scope,
             { loadHook(); val (items, warning) = store.load(); commits.loaded(items); items.map { it.profile } to warning },
-            { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, runtime, {}, {},
+            { _, _ -> error("legacy save") }, { error("legacy delete") }, { null }, {}, runtime, { stops++; runtime.value = VpnState() }, {},
             saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
             deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
             checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) },
             rebase = { id, text, draft -> commits.rebase(id, text, draft).also { rebaseHook() } },
             readLatest = { id -> store.readLatest(UUID.fromString(id)).also { readHook() } },
-            saveAsNewCommitted = { text, draft, publish -> commits.saveAsNew(text, draft, publish) })
+            saveAsNewCommitted = { text, draft, publish -> commits.saveAsNew(text, draft, publish) },
+            deleteLatest = { id, expected, publish -> commits.deleteAt(id, expected, publish) },
+            strings = { id, args -> when (id) {
+                R.string.profile_copy_name -> "${args[0]} (copy)"
+                R.string.profile_copy_name_numbered -> "${args[0]} (copy ${args[1]})"
+                else -> "#$id"
+            } })
 
         suspend fun create(text: String): String {
             val id = UUID.randomUUID()
@@ -191,8 +198,8 @@ class EditorConflictRebaseTest {
         assertNull(model.error.value)
         val created = store.load().first.single()
         assertNotEquals(id, created.id)
-        assertEquals("Rescued", created.name)
-        assertEquals(draft.source.text, created.text)
+        assertEquals("Rescued (copy)", created.name)
+        assertEquals(ConfigDocument.parse(draft.source.text).set("Profile", "Name", "Rescued (copy)").render(), created.text)
         assertEquals(created.id, model.selected.value)
         assertTrue(model.profiles.value.any { it.id == created.id })
     }
@@ -207,7 +214,7 @@ class EditorConflictRebaseTest {
         assertEquals(EditorConflict.Gone(deleted = false), draft.conflict)
         model.saveAsNew("saved as new") { done++ }.join()
         assertEquals(1, done)
-        assertEquals("Mine", store.load().first.single { it.id != id }.name)
+        assertEquals("Mine (copy)", store.load().first.single { it.id != id }.name)
     }
 
     @Test fun saveAsNewCopiesImportedAndSavedSshFilesForTheNewProfile() = scenario {
@@ -257,7 +264,7 @@ class EditorConflictRebaseTest {
         val draft = open(id)
         val key = resources.stage(SshProfileResources.Kind.IDENTITY, "identity".byteInputStream())
         assertTrue(draft.importKey(SshProfileResources.Kind.IDENTITY, key))
-        draft.set("Profile", "Name", "")   // invalid name: the create fails validation
+        draft.set("AccessKey", "SOCKS5", "socks5://192.0.2.1:1080")   // a second key source: the create fails validation
         model.saveAsNew("saved as new") { done++ }.join()
         assertEquals(0, done)
         assertNotNull(model.error.value)
@@ -458,5 +465,125 @@ class EditorConflictRebaseTest {
         assertSame(replacement, model.editorDraft)
         draft.resources.dispose(resources)
         replacement.resources.dispose(resources)
+    }
+
+    @Test fun saveAsNewNamesTheCopyAfterTheTakenNames() = scenario {
+        val id = create(ss("Office"))
+        create(ss("Office (copy)"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Interface", "MTU", "1500") }
+        draft.set("Interface", "DNS", "8.8.8.8")
+        save(draft).join()
+        model.saveAsNew("saved as new") { done++ }.join()
+        assertEquals(1, done)
+        val names = store.load().first.map { it.name }.toSet()
+        assertEquals(setOf("Office", "Office (copy)", "Office (copy 2)"), names)
+        assertEquals("8.8.8.8", ConfigDocument.parse(store.load().first.single { it.name == "Office (copy 2)" }.text).value("Interface", "DNS"))
+    }
+
+    /** Decision: Cancel keeps the draft and its old base; the next Done merges again. */
+    @Test fun cancelKeepsTheOldBaseAndTheNextSaveMergesAgain() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        val opened = draft.baseRevision
+        changeElsewhere(id) { set("Interface", "DNS", "9.9.9.9") }
+        draft.set("Interface", "MTU", "1400")
+        save(draft).join()
+        val first = changed(draft)
+        draft.conflict = null
+        assertEquals(opened, draft.baseRevision)
+        assertEquals("1400", draft.document.value("Interface", "MTU"))
+        save(draft).join()
+        assertEquals(0, done)
+        val second = changed(draft)
+        assertNotSame(first, second)
+        assertEquals(first.latest.revision, second.latest.revision)
+        assertEquals(opened, draft.baseRevision)
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(emptyMap()))
+        save(draft).join()
+        assertEquals(1, done)
+    }
+
+    @Test fun deleteAfterAChangeElsewhereAsksAndDeletesAnyway() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Profile", "Name", "Theirs") }
+        model.delete(id) { done++ }.join()
+        assertEquals(0, done)
+        assertNull(model.error.value)
+        assertEquals(EditorConflict.ChangedBeforeDelete, draft.conflict)
+        assertEquals("Theirs", stored(id).name)
+        // Cancel leaves everything as it is.
+        draft.conflict = null
+        model.delete(id) { done++ }.join()
+        assertEquals(EditorConflict.ChangedBeforeDelete, draft.conflict)
+        model.deleteAnyway { done++ }.join()
+        assertEquals(1, done)
+        assertNull(model.error.value)
+        assertTrue(store.load().first.none { it.id == id })
+        assertTrue(model.profiles.value.none { it.id == id })
+    }
+
+    @Test fun deleteAnywayAsksAgainWhenTheProfileChangesInBetween() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Profile", "Name", "Theirs") }
+        model.delete(id) { done++ }.join()
+        assertEquals(EditorConflict.ChangedBeforeDelete, draft.conflict)
+        // Another change lands between the re-read and the compare-and-delete.
+        readHook = { readHook = {}; changeElsewhere(id) { set("Profile", "Name", "Again") } }
+        model.deleteAnyway { done++ }.join()
+        assertEquals(0, done)
+        assertEquals(EditorConflict.ChangedBeforeDelete, draft.conflict)
+        assertEquals("Again", stored(id).name)
+        model.deleteAnyway { done++ }.join()
+        assertEquals(1, done)
+        assertTrue(store.load().first.none { it.id == id })
+    }
+
+    @Test fun deleteOfAProfileAlreadyDeletedElsewhereIsDone() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(id), stored(id).revision) is CommitResult.Committed)
+        model.delete(id) { done++ }.join()
+        assertEquals(1, done)
+        assertNull(model.error.value)
+        assertNull(draft.conflict)
+        // Also when it disappears after "Delete anyway" was confirmed.
+        val other = create(ss("B"))
+        val second = open(other)
+        changeElsewhere(other) { set("Profile", "Name", "Theirs") }
+        model.delete(other) { done++ }.join()
+        assertEquals(EditorConflict.ChangedBeforeDelete, second.conflict)
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(other), stored(other).revision) is CommitResult.Committed)
+        model.deleteAnyway { done++ }.join()
+        assertEquals(2, done)
+        assertNull(model.error.value)
+    }
+
+    @Test fun deleteOfAnUnreadableProfileKeepsTheError() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        File(profilesDir, "$id.conf").writeText("[broken")
+        model.delete(id) { done++ }.join()
+        assertEquals(0, done)
+        assertEquals("#${R.string.profile_edit_conflict}", model.error.value)
+        assertNull(draft.conflict)
+        assertTrue(File(profilesDir, "$id.conf").exists())
+    }
+
+    @Test fun deleteAnywayStopsTheActiveVpnFirst() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Profile", "Name", "Theirs") }
+        runtime.value = VpnState(state = "connected", activeProfileId = id, connectedAtElapsed = 1)
+        model.delete(id) { done++ }.join()
+        assertEquals(EditorConflict.ChangedBeforeDelete, draft.conflict)
+        val stopsBefore = stops
+        runtime.value = VpnState(state = "connected", activeProfileId = id, connectedAtElapsed = 2)
+        model.deleteAnyway { done++ }.join()
+        assertEquals(stopsBefore + 1, stops)
+        assertEquals(1, done)
+        assertTrue(store.load().first.none { it.id == id })
     }
 }

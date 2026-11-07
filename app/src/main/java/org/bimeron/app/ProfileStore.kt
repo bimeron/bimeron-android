@@ -46,9 +46,10 @@ object Conf {
         return try { decoder.decode(ByteBuffer.wrap(bytes)).toString() }
         catch (_: Exception) { throw ProfileError(R.string.profile_error_not_utf8) }
     }
+    const val NAME_LIMIT = 128
     fun validName(name: String): String {
         val value = name.trim()
-        if (value.isEmpty() || value.length > 128 || value.any { it.isISOControl() }) throw ProfileError(R.string.profile_error_invalid_name)
+        if (value.isEmpty() || value.length > NAME_LIMIT || value.any { it.isISOControl() }) throw ProfileError(R.string.profile_error_invalid_name)
         return value
     }
     fun keyField(key: String): String {

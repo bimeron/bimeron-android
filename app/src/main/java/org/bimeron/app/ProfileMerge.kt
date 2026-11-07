@@ -14,6 +14,9 @@ sealed interface MergeField {
 
 enum class MergeChoice { MINE, THEIRS }
 
+/** Why a merge fell back to one whole-text conflict. */
+enum class WholeTextReason { UNPARSABLE, COMMENTS }
+
 /**
  * One displayable line of a side of a conflict. [key] is null for single values and rules. Secret lines
  * must be shown through [display], which masks them unless the user revealed that conflict.
@@ -45,10 +48,14 @@ data class MergeConflict(val field: MergeField, val mine: List<MergeLine>?, val 
  *   carried over verbatim. If both changed them, the decision is made on meaning (enabled state and
  *   values): equal meaning, or a cosmetic-only change on one side, merges; otherwise it is a conflict.
  * - If any side does not parse, the result is a single [MergeField.WholeText] conflict (mine vs theirs),
- *   unless mine and theirs are identical.
- * - The merged text is built on theirs, so its comments and layout are kept. Mine's comment edits
- *   outside rules taken from mine are not carried, and theirs' rule comments are lost when mine's rules
- *   replace a cosmetic-only rule change of theirs; [commentsMayBeLost] flags both.
+ *   unless mine and theirs are identical ([WholeTextReason.UNPARSABLE]).
+ * - The merged text is built on theirs, so its comments and layout are kept. Comments travel only with
+ *   blocks taken verbatim from mine: rule blocks taken from mine and sections only mine added. If mine
+ *   changed comments that even the merge most favourable to mine (every conflict resolved as mine) would
+ *   not keep, the result escalates to one whole-text conflict ([WholeTextReason.COMMENTS]); comment lines
+ *   are compared as a multiset, so moving a comment is not a change. Theirs' comment edits never escalate:
+ *   they are kept, except that a rule list whose only change in theirs is comments conflicts as a whole
+ *   ([MergeField.Rules]) with mine's changed rules instead of being replaced silently.
  */
 object ProfileMerge {
     const val MASK = "••••••••"
@@ -74,11 +81,8 @@ object ProfileMerge {
         val mineChanges: Int,
         /** Fields changed only in theirs; kept automatically. */
         val theirsChanges: Int,
-        /**
-         * Some comment edits may be missing from the merged text: mine edited comments (only those inside
-         * rule blocks taken from mine are carried), or mine's rules replaced theirs' cosmetic rule edits.
-         */
-        val commentsMayBeLost: Boolean,
+        /** Set when the result is one whole-text conflict instead of a field merge. */
+        val wholeTextReason: WholeTextReason?,
         private val theirs: String,
         private val mine: String,
         private val parsed: Boolean,
@@ -103,11 +107,7 @@ object ProfileMerge {
 
     fun merge(base: String, mine: String, theirs: String): Result {
         val documents = runCatching { Triple(ConfigDocument.parse(base), ConfigDocument.parse(mine), ConfigDocument.parse(theirs)) }.getOrNull()
-        if (documents == null) {
-            val conflicts = if (mine == theirs) emptyList() else
-                listOf(MergeConflict(MergeField.WholeText, listOf(MergeLine(null, mine, true)), listOf(MergeLine(null, theirs, true))))
-            return Result(conflicts, 0, 0, false, theirs, mine, false, emptyList(), emptyMap())
-        }
+        if (documents == null) return wholeText(mine, theirs, WholeTextReason.UNPARSABLE)
         val (b, m, t) = documents
         val plan = mutableListOf<(ConfigDocument) -> ConfigDocument>()
         val resolutions = mutableMapOf<MergeField, (ConfigDocument) -> ConfigDocument>()
@@ -122,6 +122,7 @@ object ProfileMerge {
                 vb != null && vm == null && vt == null -> Unit
                 vb != null && vm == null && vt == vb -> { plan += { it.removeSection(section) }; mineChanges++ }
                 vb != null && vt == null && vm == vb -> theirsChanges++
+                vb == null && vt == null && vm != null -> { plan += { it.withSectionFrom(m, section) }; mineChanges += maxOf(vm.size, 1) }
                 vb != null && (vm == null || vt == null) -> {
                     val field = MergeField.Section(section)
                     conflicts += MergeConflict(field, vm?.let { sectionLines(section, it) }, vt?.let { sectionLines(section, it) })
@@ -143,31 +144,50 @@ object ProfileMerge {
                             }
                         }
                     }
-                    if (vb == null && vm != null && vt == null && vm.isEmpty()) { plan += { it.addSection(section) }; mineChanges++ }
                 }
             }
         }
 
         val rb = rawRules(b); val rm = rawRules(m); val rt = rawRules(t)
-        var rulesDropTheirComments = false
         when {
             rm == rt -> Unit
             rm == rb -> theirsChanges++
             rt == rb -> { plan += { it.withRules(m.rules) }; mineChanges++ }
             // Both changed the blocks: decide on meaning, so a reformat on one side does not conflict.
             semanticRules(m) == semanticRules(t) -> Unit
-            semanticRules(t) == semanticRules(b) -> {
-                plan += { it.withRules(m.rules) }; mineChanges++
-                rulesDropTheirComments = ruleComments(t) != ruleComments(m)
-            }
+            // Theirs only reformatted: mine's rules win, unless theirs edited rule comments that would be lost.
+            semanticRules(t) == semanticRules(b) && ruleComments(t) == ruleComments(b) -> { plan += { it.withRules(m.rules) }; mineChanges++ }
             semanticRules(m) == semanticRules(b) -> theirsChanges++
             else -> {
                 conflicts += MergeConflict(MergeField.Rules, ruleLines(m), ruleLines(t))
                 resolutions[MergeField.Rules] = { it.withRules(m.rules) }
             }
         }
-        val commentsChanged = b.comments().sorted() != m.comments().sorted() || rulesDropTheirComments
-        return Result(conflicts, mineChanges, theirsChanges, commentsChanged, theirs, mine, true, plan, resolutions)
+        val result = Result(conflicts, mineChanges, theirsChanges, null, theirs, mine, true, plan, resolutions)
+        val favourable = ConfigDocument.parse(result.resolve(conflicts.associate { it.field to MergeChoice.MINE }))
+        return if (dropsMineComments(b, m, t, favourable)) wholeText(mine, theirs, WholeTextReason.COMMENTS) else result
+    }
+
+    private fun wholeText(mine: String, theirs: String, reason: WholeTextReason): Result {
+        val conflicts = if (mine == theirs) emptyList() else
+            listOf(MergeConflict(MergeField.WholeText, listOf(MergeLine(null, mine, true)), listOf(MergeLine(null, theirs, true))))
+        return Result(conflicts, 0, 0, reason.takeIf { conflicts.isNotEmpty() }, theirs, mine, false, emptyList(), emptyMap())
+    }
+
+    /**
+     * True if [result] does not reflect mine's comment edits: for every comment line whose count mine
+     * changed, the result must hold theirs' count plus mine's change (or mine's count when theirs made the
+     * same change).
+     */
+    private fun dropsMineComments(b: ConfigDocument, m: ConfigDocument, t: ConfigDocument, result: ConfigDocument): Boolean {
+        fun counts(document: ConfigDocument) = document.comments().groupingBy { it }.eachCount()
+        val cb = counts(b); val cm = counts(m); val ct = counts(t); val cr = counts(result)
+        return (cb.keys + cm.keys).any { line ->
+            val base = cb[line] ?: 0; val ours = cm[line] ?: 0; val other = ct[line] ?: 0
+            if (ours == base) return@any false
+            val expected = if (ours == other) ours else maxOf(0, other + ours - base)
+            (cr[line] ?: 0) != expected
+        }
     }
 
     /** Non-rule sections with their unquoted values; the preamble (no section) has no keys. */
