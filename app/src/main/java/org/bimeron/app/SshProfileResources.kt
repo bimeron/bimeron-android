@@ -24,6 +24,15 @@ class SshProfileResources(private val root: File) {
         internal val owner: Any, val kind: Kind, val path: String, val profileId: UUID,
     )
     private val owner = Any()
+    /**
+     * Generations published for drafts and not yet referenced by a saved config. Another writer's save of
+     * the same profile ([afterSaved]) must not prune them while the draft can still retry its save.
+     */
+    private val unsaved = mutableSetOf<String>()
+    /** Unreferenced saved generations kept only because a draft pinned them ([SshGenerationPins]). */
+    private val deferred = mutableSetOf<String>()
+    private fun kept(generation: File) = generation.absolutePath in unsaved ||
+        SshGenerationPins.pinned(generation.absolutePath).also { if (it) deferred += generation.absolutePath }
     private val base = root.absoluteFile.toPath().normalize().toFile()
     internal var publish: (File, File) -> Unit = { source, target ->
         Files.move(source.toPath(), target.toPath(), ATOMIC_MOVE)
@@ -73,8 +82,10 @@ class SshProfileResources(private val root: File) {
     /** Publish before saving config. On failure retain the token for retry. To cancel before saving,
      * abort token.prepared if present (publication may precede failure); otherwise discard the token.
      * After saving, use afterSaved instead of aborting a generation referenced by config.
+     * [draft]: the generation belongs to an open editor draft until a saved config references it, so another
+     * writer's [afterSaved] or [afterDeleted] keeps it; the draft releases it by saving or by [abort].
      */
-    @Synchronized fun prepare(profileId: UUID, token: StagedToken): OwnedGeneration = safe {
+    @Synchronized fun prepare(profileId: UUID, token: StagedToken, draft: Boolean = false): OwnedGeneration = safe {
         require(token.owner === owner)
         token.prepared?.let {
             require(it.profileId == profileId)
@@ -93,10 +104,11 @@ class SshProfileResources(private val root: File) {
         } catch (e: Exception) {
             // A publisher can fail after rename; retain the moved generation for retry.
             checked(target)
-            if (target.isDirectory && !token.file.parentFile.exists()) token.prepared = handle
+            if (target.isDirectory && !token.file.parentFile.exists()) { token.prepared = handle; if (draft) unsaved += target.absolutePath }
             throw e
         }
         token.prepared = handle
+        if (draft) unsaved += target.absolutePath
         syncPublished(handle)
         handle
     }
@@ -131,22 +143,73 @@ class SshProfileResources(private val root: File) {
         require(handle.owner === owner)
         require(ownedPath(handle.profileId, handle.path) != null)
         removeTree(File(handle.path).parentFile)
+        unsaved -= File(handle.path).parentFile.absolutePath
+        removeIfEmpty(File(handle.path).parentFile.parentFile)
+    }
+
+    /** Called when drafts released their pins on [generations]: removes those whose prune was deferred. */
+    @Synchronized fun afterUnpinned(generations: Collection<String>): Unit = safe {
+        generations.filter { it in deferred && !SshGenerationPins.pinned(it) }.forEach { path ->
+            deferred -= path
+            val generation = File(path)
+            checked(generation)
+            if (generation.parentFile.parentFile != File(base, "profiles")) return@forEach
+            removeTree(generation)
+            removeIfEmpty(generation.parentFile)
+        }
+    }
+
+    private fun removeIfEmpty(directory: File) {
+        checked(directory)
+        if (directory.isDirectory && directory.list()?.isEmpty() == true) directory.delete()
+    }
+
+    /** Stages a private copy of [token]'s file (its published generation once prepared) for another draft. */
+    @Synchronized fun copy(token: StagedToken): StagedToken = safe {
+        require(token.owner === owner)
+        val source = token.prepared?.let { File(it.path) } ?: token.file
+        checked(source); require(source.isFile)
+        stage(token.kind, source.inputStream())
+    }
+
+    /**
+     * Stages a private copy of the [kind] file at [path] if it belongs to a generation of [profileId];
+     * null if [path] is not such a file (it is then left to the caller as an ordinary path).
+     */
+    @Synchronized fun copyCommitted(profileId: UUID, path: String, kind: Kind): StagedToken? = safe {
+        if (ownedPath(profileId, path) == null || File(path).name != kind.filename) return@safe null
+        val source = File(path)
+        require(source.isFile)
+        stage(kind, source.inputStream())
     }
 
     /** Pass ALL identity and known-hosts references. Unknown paths conservatively prevent pruning. */
     @Synchronized fun afterSaved(profileId: UUID, referencedPaths: Set<String>): Unit = safe {
-        val referenced = referencedPaths.map { ownedPath(profileId, it) ?: return@safe }.toSet()
+        // Owned references are saved now, even when an unowned path below prevents pruning.
+        val referenced = referencedPaths.mapNotNull { ownedPath(profileId, it) }.toSet()
+        unsaved -= referenced
+        deferred -= referenced
+        if (referenced.size != referencedPaths.size) return@safe
         val profile = profileDirectory(profileId)
         checked(profile)
         if (!profile.exists()) return@safe
         val generations = profile.listFiles() ?: throw IOException()
         // Validate the entire set before any removal; unexpected entries are retained.
         if (generations.any { !generation(it) }) return@safe
-        generations.filter { it.absolutePath !in referenced }.forEach(::removeTree)
+        generations.filter { it.absolutePath !in referenced && !kept(it) }.forEach(::removeTree)
     }
 
+    /**
+     * Removes the profile's files, except generations an open draft published and has not saved yet, or
+     * pinned through its base text; those go when the draft aborts or unpins them.
+     */
     @Synchronized fun afterDeleted(profileId: UUID): Unit = safe {
-        removeTree(profileDirectory(profileId))
+        val profile = profileDirectory(profileId)
+        checked(profile)
+        if (!profile.exists()) return@safe
+        val generations = profile.listFiles() ?: throw IOException()
+        if (generations.none { kept(it) }) return@safe removeTree(profile)
+        generations.filterNot { kept(it) }.forEach(::removeTree)
     }
 
     /** Only at singleton initialization before imports exist. Null means config inventory incomplete. */

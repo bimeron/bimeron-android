@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notifications_section_title">Уведомления</string>
+    <string name="notifications_off_title">Уведомления отключены</string>
+    <string name="notifications_off_hint">Включите их, чтобы видеть статус VPN и напоминание о переподключении после перезапуска.</string>
+    <string name="notifications_open_settings">Открыть настройки</string>
+</resources>

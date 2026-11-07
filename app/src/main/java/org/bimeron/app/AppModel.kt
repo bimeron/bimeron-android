@@ -52,6 +52,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
         deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
         checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) },
+        rebase = { id, text, draft -> commits.rebase(id, text, draft) },
+        readLatest = { id -> store.readLatest(UUID.fromString(id)) },
+        saveAsNewCommitted = { text, draft, publish -> commits.saveAsNew(text, draft, publish) },
+        deleteLatest = { id, expected, publish -> commits.deleteAt(id, expected, publish) },
         readSelection = { application.preferences.data.first()[selectedKey] },
         writeSelection = { id ->
             application.preferences.edit { settings ->
@@ -108,6 +112,12 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun save(text: String, id: String?, event: String, configurationChanged: Boolean = false, done: () -> Unit) =
         coordinator.save(text, id, event, configurationChanged, done)
     fun delete(id: String, done: () -> Unit) = coordinator.delete(id, done)
+    /** Replaces the open draft's text with the latest stored profile at its revision (after the user confirmed). */
+    fun reloadLatest() = coordinator.reloadLatest()
+    /** Saves the open draft as a new profile with a new id and its own copies of the SSH files. */
+    fun saveAsNew(event: String, done: () -> Unit) = coordinator.saveAsNew(event, done)
+    /** Deletes the open draft's profile at its latest revision after the user confirmed a delete conflict. */
+    fun deleteAnyway(done: () -> Unit) = coordinator.deleteAnyway(done)
     fun clearError() = coordinator.clearError()
 
     internal val ssconfRefresh = SSConfRefreshCoordinator(
@@ -153,6 +163,12 @@ internal class AppModelOperations(
     private val journal: (String, LogLevel) -> Unit = { message, _ -> log(message) },
     // Resolves user-visible string resources; the default (resource id) serves plain JVM tests.
     private val strings: (Int, Array<out Any>) -> String = { id, _ -> "#$id" },
+    // Edit-conflict rebase: reads the latest stored profile and merges the draft onto it (null = not offered).
+    private val rebase: (suspend (String, String, EditorDraft) -> EditorConflict?)? = null,
+    private val readLatest: (suspend (String) -> LatestProfile)? = null,
+    private val saveAsNewCommitted: (suspend (String, EditorDraft, suspend (Profile) -> Unit) -> Unit)? = null,
+    // Compare-and-delete against an explicit revision ("Delete anyway"); null = not offered.
+    private val deleteLatest: (suspend (String, ProfileRevision, suspend () -> Unit) -> Unit)? = null,
 ) {
     private fun resource(id: Int) = strings(id, emptyArray())
 
@@ -337,31 +353,118 @@ internal class AppModelOperations(
             try {
                 if (id != null && profiles.value.none { it.id == id })
                     throw ProfileError(if (editorBound) R.string.profile_deleted_elsewhere else R.string.profile_no_longer_exists)
-                val publish: suspend (Profile) -> Unit = { profile -> withContext(NonCancellable) {
-                    // Persistence is committed. Refresh/preferences failures must not report a failed save.
-                    profiles.value = profiles.value.filterNot { it.id == profile.id } + profile
-                    try {
-                        val (items, hasWarning) = load()
-                        profiles.value = items
-                        if (items.none { it.id == pendingSwitch.value }) cancelSwitch()
-                        warning.value = hasWarning
-                        val vpnBusy = runtime.value.state in setOf("permission", "connecting", "connected", "reconnecting", "stopping")
-                        if (id == null && !vpnBusy) persistSelection(profile.id)
-                        if (configurationChanged && id != null) offerApply(id)
-                    } catch (_: Exception) { warning.value = true }
-                    runCatching { log(event) }
-                    if (!editorBound || current()) runCatching { done() }.onFailure { warning.value = true }
-                } }
+                val publish = published(id, event, configurationChanged, { !editorBound || current() }, done)
                 if (saveCommitted != null) saveCommitted.invoke(text, id, draft, publish)
                 else publish(saveDraft?.invoke(text, id, draft) ?: saveProfile(text, id))
             } catch (e: ProfileError) {
                 if (!editorBound || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
-                if (e.isEditConflict) reloadAfterConflict()
+                if (e.isEditConflict) {
+                    reloadAfterConflict()
+                    if (editorBound) offerRebase(id!!, text, draft as? EditorDraft, current)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 if (!editorBound || current()) error.value = resource(R.string.profile_save_failed)
+                journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
+            }
+        }
+    }
+
+    /** Publication after a committed save: [id] null means a new profile, which is selected if the VPN is idle. */
+    private fun published(id: String?, event: String, configurationChanged: Boolean, closes: () -> Boolean,
+                          done: () -> Unit): suspend (Profile) -> Unit = { profile -> withContext(NonCancellable) {
+        // Persistence is committed. Refresh/preferences failures must not report a failed save.
+        profiles.value = profiles.value.filterNot { it.id == profile.id } + profile
+        try {
+            val (items, hasWarning) = load()
+            profiles.value = items
+            if (items.none { it.id == pendingSwitch.value }) cancelSwitch()
+            warning.value = hasWarning
+            val vpnBusy = runtime.value.state in setOf("permission", "connecting", "connected", "reconnecting", "stopping")
+            if (id == null && !vpnBusy) persistSelection(profile.id)
+            if (configurationChanged && id != null) offerApply(id)
+        } catch (_: Exception) { warning.value = true }
+        runCatching { log(event) }
+        if (closes()) runCatching { done() }.onFailure { warning.value = true }
+    } }
+
+    /**
+     * After an editor save conflicted: merges the draft onto the latest stored profile and shows the
+     * conflict panel, only while the draft that saved is still shown unchanged. Never saves.
+     */
+    private suspend fun offerRebase(id: String, text: String, draft: EditorDraft?, current: () -> Boolean) {
+        val rebase = rebase ?: return
+        if (draft == null || !current()) return
+        val conflict = try { rebase(id, text, draft) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+        if (conflict == null || !current()) return
+        draft.conflict = conflict
+        error.value = resource(conflictMessage(conflict))
+    }
+
+    private fun conflictMessage(conflict: EditorConflict) = when {
+        conflict !is EditorConflict.Gone -> R.string.profile_conflict_review
+        conflict.deleted -> R.string.profile_deleted_elsewhere
+        else -> R.string.profile_conflict_unreadable
+    }
+
+    /** [text] renamed to a free localized "Name (copy)" / "Name (copy n)" among the loaded profiles. */
+    private fun asCopy(text: String): String {
+        val document = try { ConfigDocument.parse(text) } catch (_: ProfileError) { return text }
+        val name = copyProfileName(document.value("Profile", "Name"), profiles.value.map { it.name }.toSet()) { base, number ->
+            if (number == 1) strings(R.string.profile_copy_name, arrayOf(base)) else strings(R.string.profile_copy_name_numbered, arrayOf(base, number))
+        }
+        return document.set("Profile", "Name", name).render()
+    }
+
+    /** Replaces the open draft with the latest stored profile at its revision; offers save-as-new if it is gone. */
+    fun reloadLatest(): kotlinx.coroutines.Job {
+        val draft = editorDraft as? EditorDraft
+        val current = stillCurrent(draft)
+        return operation {
+            val read = readLatest
+            if (draft == null || read == null || !current()) return@operation
+            try {
+                val latest = read(draft.profile.id)
+                if (!current()) return@operation
+                if (latest is LatestProfile.Present) {
+                    draft.reload(latest.stored)
+                    error.value = null
+                } else {
+                    val gone = EditorConflict.Gone(deleted = latest == LatestProfile.Deleted)
+                    draft.conflict = gone
+                    error.value = resource(conflictMessage(gone))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (current()) error.value = resource(R.string.profiles_load_failed)
+            }
+        }
+    }
+
+    /**
+     * Saves the open draft's text as a new profile (new id, own copies of its SSH files) and closes the
+     * editor on success. The draft and its imports are left untouched when this fails.
+     */
+    fun saveAsNew(event: String, done: () -> Unit): kotlinx.coroutines.Job {
+        val draft = editorDraft as? EditorDraft
+        val current = stillCurrent(draft)
+        val text = draft?.source?.text
+        return operation {
+            val commit = saveAsNewCommitted
+            if (draft == null || text == null || commit == null || !current()) return@operation
+            error.value = null
+            try {
+                commit(asCopy(text), draft, published(null, event, false, current, done))
+            } catch (e: ProfileError) {
+                if (current()) error.value = e.text(strings)
+                journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (current()) error.value = resource(R.string.profile_save_failed)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
             }
         }
@@ -373,41 +476,94 @@ internal class AppModelOperations(
         return operation {
             if (draft != null && !current()) return@operation
             error.value = null
-            try {
-                checkDelete(id, draft)
-                val vpn = runtime.value
-                if (id == vpn.activeProfileId || id == vpn.attemptProfileId) {
-                    stop()
-                    val stopped = withTimeoutOrNull(15_000) {
-                        runtime.first { it.state == "disconnected" || it.state == "failed" }
-                    }
-                    if (stopped?.state != "disconnected") throw ProfileError(R.string.profile_delete_vpn_stop_failed)
-                }
-                val publish: suspend () -> Unit = { withContext(NonCancellable) {
-                    profiles.value = profiles.value.filterNot { it.id == id }
-                    try {
-                        val (items, hasWarning) = load()
-                        profiles.value = items
-                        if (items.none { it.id == pendingSwitch.value }) cancelSwitch()
-                        warning.value = hasWarning
-                        if (selected.value == id || items.none { it.id == selected.value }) persistSelection(items.firstOrNull()?.id)
-                        if (pendingApply.value == id) pendingApply.value = null
-                    } catch (_: Exception) { warning.value = true }
-                    runCatching { log(resource(R.string.journal_profile_deleted)) }
-                    if (current()) runCatching { done() }.onFailure { warning.value = true }
-                } }
+            runDelete(id, draft, current, done, precheck = { checkDelete(id, draft) }) { publish ->
                 if (deleteCommitted != null) deleteCommitted.invoke(id, draft, publish)
                 else { deleteProfile(id); publish() }
-            } catch (e: ProfileError) {
-                if (draft == null || current()) error.value = e.text(strings)
-                journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
-                if (e.isEditConflict) reloadAfterConflict()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                if (draft == null || current()) error.value = resource(R.string.profile_delete_failed)
-                journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
             }
+        }
+    }
+
+    /**
+     * "Delete anyway" after a delete conflict: re-reads the latest revision and compare-and-deletes against
+     * it, stopping an active VPN first. Another change in between shows the confirmation again; a profile
+     * already deleted counts as done.
+     */
+    fun deleteAnyway(done: () -> Unit): kotlinx.coroutines.Job {
+        val draft = editorDraft as? EditorDraft
+        val current = stillCurrent(draft)
+        return operation {
+            val read = readLatest
+            val commit = deleteLatest
+            if (draft == null || read == null || commit == null || !current()) return@operation
+            val id = draft.profile.id
+            error.value = null
+            draft.conflict = null
+            runDelete(id, draft, current, done, precheck = {}) { publish ->
+                when (val latest = read(id)) {
+                    is LatestProfile.Present -> commit(id, latest.stored.revision, publish)
+                    LatestProfile.Deleted -> throw ProfileError(R.string.profile_deleted_elsewhere)
+                    LatestProfile.Unreadable -> throw ProfileError(R.string.profile_edit_conflict)
+                }
+            }
+        }
+    }
+
+    private suspend fun runDelete(id: String, draft: Any?, current: () -> Boolean, done: () -> Unit, precheck: () -> Unit,
+                                  commit: suspend (suspend () -> Unit) -> Unit) {
+        val publish: suspend () -> Unit = { withContext(NonCancellable) {
+            profiles.value = profiles.value.filterNot { it.id == id }
+            try {
+                val (items, hasWarning) = load()
+                profiles.value = items
+                if (items.none { it.id == pendingSwitch.value }) cancelSwitch()
+                warning.value = hasWarning
+                if (selected.value == id || items.none { it.id == selected.value }) persistSelection(items.firstOrNull()?.id)
+                if (pendingApply.value == id) pendingApply.value = null
+            } catch (_: Exception) { warning.value = true }
+            runCatching { log(resource(R.string.journal_profile_deleted)) }
+            if (current()) runCatching { done() }.onFailure { warning.value = true }
+        } }
+        try {
+            precheck()
+            val vpn = runtime.value
+            if (id == vpn.activeProfileId || id == vpn.attemptProfileId) {
+                stop()
+                val stopped = withTimeoutOrNull(15_000) {
+                    runtime.first { it.state == "disconnected" || it.state == "failed" }
+                }
+                if (stopped?.state != "disconnected") throw ProfileError(R.string.profile_delete_vpn_stop_failed)
+            }
+            commit(publish)
+        } catch (e: ProfileError) {
+            if (draft == null || current()) error.value = e.text(strings)
+            journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
+            if (e.isEditConflict) {
+                reloadAfterConflict()
+                if (draft is EditorDraft) offerDeleteAnyway(id, e, draft, current, publish)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            if (draft == null || current()) error.value = resource(R.string.profile_delete_failed)
+            journal(resource(R.string.journal_profile_delete_error), LogLevel.ERROR)
+        }
+    }
+
+    /**
+     * After an editor delete conflicted: a profile deleted elsewhere is what the user asked for, so the
+     * delete counts as done; a changed one asks to delete anyway; an unreadable one keeps the error.
+     */
+    private suspend fun offerDeleteAnyway(id: String, e: ProfileError, draft: EditorDraft, current: () -> Boolean,
+                                          publish: suspend () -> Unit) {
+        val read = readLatest ?: return
+        if (deleteLatest == null || !current()) return
+        val latest = if (e.resId == R.string.profile_deleted_elsewhere) LatestProfile.Deleted
+            else try { read(id) } catch (x: CancellationException) { throw x } catch (_: Exception) { return }
+        if (!current()) return
+        when (latest) {
+            LatestProfile.Deleted -> { error.value = null; publish() }
+            is LatestProfile.Present -> { error.value = null; draft.conflict = EditorConflict.ChangedBeforeDelete }
+            LatestProfile.Unreadable -> Unit
         }
     }
 
@@ -446,7 +602,8 @@ internal suspend fun publishStoreCommit(store: ProfileStore, requestId: UUID,
  * revision; otherwise they conflict. Only creation (id == null) commits with expected == null.
  * A conflict throws [R.string.profile_edit_conflict] ([R.string.profile_deleted_elsewhere] when the
  * profile is gone) and leaves the draft and its imported SSH resources untouched; AppModelOperations
- * then reloads so that reopening pins the latest revision.
+ * then reloads so that reopening pins the latest revision, and offers [rebase] for the draft. Only the
+ * user applying that merge (or reloading the latest profile) advances the draft's base.
  * After a successful save the editor closes; if it stays open (stale result), its base is not
  * advanced: every commit takes a new store revision, so reusing the old base conflicts.
  * Main-thread owned.
@@ -493,8 +650,52 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
         }
     }
 
-    suspend fun delete(id: String, draft: EditorDraft?, publish: suspend () -> Unit) {
-        val expected = base(id, draft, null)
+    /**
+     * Reads the latest stored [id] with its revision (one read under the store lock) and rebases [text],
+     * the draft's text, onto it from the draft's base text. Null if [text] is not this draft's text.
+     */
+    suspend fun rebase(id: String, text: String, draft: EditorDraft): EditorConflict? {
+        if (draft.profile.id != id || draft.source.text != text) return null
+        val base = draft.profile.text
+        return when (val latest = store().readLatest(UUID.fromString(id))) {
+            is LatestProfile.Present -> EditorConflict.Changed(latest.stored, text,
+                withContext(Dispatchers.Default) { ProfileMerge.merge(base, text, latest.stored.text) })
+            LatestProfile.Deleted -> EditorConflict.Gone(deleted = true)
+            LatestProfile.Unreadable -> EditorConflict.Gone(deleted = false)
+        }
+    }
+
+    /**
+     * Creates [text] as a new profile. Its SSH files are copied into a new draft for the new id
+     * ([SshDraftResources.copyTo]), handed to the profile by the commit and otherwise released here; the
+     * editor's own draft keeps its imports until it is disposed.
+     */
+    suspend fun saveAsNew(text: String, draft: EditorDraft, publish: suspend (Profile) -> Unit) {
+        val store = store()
+        val uuid = UUID.randomUUID()
+        val requestId = UUID.randomUUID()
+        val (copy, rewritten) = withContext(Dispatchers.IO) { draft.resources.copyTo(uuid, text, store.resources) }
+        try {
+            val normalized = withContext(Dispatchers.IO) { copy.resolve(rewritten, store.resources) }
+            val profile = ConfigDocument.parse(normalized).validate().copy(id = uuid.toString())
+            publishStoreCommit(store, requestId, operation = {
+                val result = store.compareAndSave(requestId, uuid, null, rewritten, copy)
+                if (result is CommitResult.Conflict) throw ProfileError(R.string.profile_save_failed)
+            }) { receipt ->
+                if (publications.accept(receipt, null)) {
+                    stored[profile.id] = StoredProfile(profile, receipt.revision!!, receipt.digest!!)
+                    publish(profile)
+                }
+            }
+        } finally {
+            withContext(NonCancellable + Dispatchers.IO) { copy.dispose(store.resources) }
+        }
+    }
+
+    suspend fun delete(id: String, draft: EditorDraft?, publish: suspend () -> Unit) = deleteAt(id, base(id, draft, null), publish)
+
+    /** Compare-and-delete of [id] against [expected]; a conflict throws like [delete]. */
+    suspend fun deleteAt(id: String, expected: ProfileRevision, publish: suspend () -> Unit) {
         val store = store()
         val uuid = UUID.fromString(id)
         val requestId = UUID.randomUUID()
@@ -507,6 +708,23 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
                 publish()
             }
         }
+    }
+}
+
+/**
+ * The name for a profile saved as a copy: [label] (base, n) is "base (copy)" for n = 1 and "base (copy n)"
+ * after, localized. The first label not in [taken] wins. The base name is shortened, never inside a
+ * surrogate pair, so the result stays within [Conf.NAME_LIMIT] characters.
+ */
+internal fun copyProfileName(name: String, taken: Set<String>, label: (String, Int) -> String): String {
+    val base = name.trim()
+    var number = 1
+    while (true) {
+        var room = (Conf.NAME_LIMIT - label("", number).length).coerceAtLeast(0)
+        if (room < base.length && room > 0 && Character.isHighSurrogate(base[room - 1])) room--
+        val candidate = label(base.take(room).trimEnd(), number).trim()
+        if (candidate !in taken) return candidate
+        number++
     }
 }
 
