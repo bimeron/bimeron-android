@@ -176,4 +176,35 @@ class TrustedHostKeysTest {
         assertNull(store.rememberTrustedHostKey(UUID.randomUUID(), line()))
         assertEquals(emptyList<String>(), File(base, "trusted-hosts").list()!!.toList())
     }
+
+    @Test fun rememberUnderTheGateFailsClosed() = runBlocking {
+        val base = temporary.root.canonicalFile
+        val store = ProfileStore(null, File(base, "profiles").apply { mkdirs() }, SshProfileResources(File(base, "ssh-resources"))) {}
+        val profileId = UUID.fromString(store.save(Conf.fromKey("SSH", "ssh://user@ssh.example.com:2222")).id)
+        try {
+            synchronized(VpnLive.gate) { store.rememberTrustedHostKey(profileId, line()) }
+            fail()
+        } catch (_: IllegalStateException) {}
+        assertFalse(File(base, "trusted-hosts").exists())
+    }
+
+    /** A draft whose profile was deleted elsewhere: count 0, Forget is a no-op that recreates nothing. */
+    @Test fun deletedProfileCountsZeroAndForgetIsNoOp() = runBlocking {
+        val base = temporary.root.canonicalFile
+        val store = ProfileStore(null, File(base, "profiles").apply { mkdirs() }, SshProfileResources(File(base, "ssh-resources"))) {}
+        val saved = store.save(Conf.fromKey("SSH", "ssh://user@ssh.example.com:2222"))
+        val profileId = UUID.fromString(saved.id)
+        store.rememberTrustedHostKey(profileId, line())
+        assertEquals(1, store.trustedHostKeyCount(profileId))
+        store.delete(saved.id)
+        assertEquals(0, store.trustedHostKeyCount(profileId))
+        store.forgetTrustedHostKeys(profileId)
+        assertEquals(emptyList<String>(), File(base, "trusted-hosts").list()!!.toList())
+        // Never created in the first place: still nothing.
+        val other = UUID.randomUUID()
+        val fresh = ProfileStore(null, File(base, "p2").apply { mkdirs() }, SshProfileResources(File(base, "r2"))) {}
+        assertEquals(0, fresh.trustedHostKeyCount(other))
+        fresh.forgetTrustedHostKeys(other)
+        assertFalse(File(base, "trusted-hosts").list()!!.isNotEmpty())
+    }
 }

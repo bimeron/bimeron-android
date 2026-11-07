@@ -156,7 +156,7 @@ internal class SshAuthenticationController {
 
         /**
          * Strict `host_key` offer: exactly the seven string fields. [HostKeyOffer.knownHostsLine] must be the
-         * OpenSSH-normalized line for the displayed host, key type and fingerprint, so what is persisted is
+         * OpenSSH-normalized line for the lowercased displayed host, key type and fingerprint, so what is persisted is
          * exactly what the user saw.
          */
         private fun parseHostKey(json: Map<*, *>): Request {
@@ -177,7 +177,9 @@ internal class SshAuthenticationController {
             if (offer.keyType !in HOST_KEY_TYPES || !offer.fingerprint.matches(FINGERPRINT)) return false
             if (!validKnownHostsLine(offer.knownHostsLine)) return false
             val fields = offer.knownHostsLine.split(' ')
-            val expectedHost = if (port == 22) name else "[$name]:$port"
+            // The dialed host:port, lowercased as Core does, then OpenSSH-normalized (bare for port 22).
+            val dialed = name.lowercase(java.util.Locale.ROOT)
+            val expectedHost = if (port == 22) dialed else "[$dialed]:$port"
             if (fields[0] != expectedHost || fields[1] != offer.keyType) return false
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest(java.util.Base64.getDecoder().decode(fields[2]))
             offer.fingerprint == "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(digest)
@@ -193,7 +195,8 @@ internal class SshAuthenticationController {
             val fields = line.split(' ')
             if (fields.size != 3 || fields.any { it.isEmpty() }) return false
             val host = fields[0]
-            if (host.length > MAX_LINE_HOST || host.any { it !in HOST_CHARS }) return false
+            // Stored hosts are lowercase (Core lowercases before normalizing), so no case variant can coexist.
+            if (host.length > MAX_LINE_HOST || host.any { it !in HOST_CHARS || it in 'A'..'Z' }) return false
             if (host.startsWith('[')) {
                 val (name, port) = splitHost(host) ?: return false
                 if (port == 22 || host != "[$name]:$port") return false

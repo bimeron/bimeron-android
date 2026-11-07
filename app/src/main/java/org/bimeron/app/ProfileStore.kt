@@ -369,6 +369,18 @@ class ProfileStore internal constructor(
                     else -> error("inventory")
                 }
             }
+            // Accept-new host keys: one file per profile plus write leftovers; no write runs during the sweep.
+            entries(File(filesRoot, TrustedHostKeys.DIRECTORY)).forEach { file ->
+                require(regular(file))
+                val name = file.name
+                when {
+                    name.endsWith(".known_hosts") && uuid(name.removeSuffix(".known_hosts")) ->
+                        if (UUID.fromString(name.removeSuffix(".known_hosts")) !in references) candidates.add(file)
+                    name.contains(".known_hosts.tmp-") && uuid(name.substringBefore(".known_hosts.tmp-")) &&
+                        name.substringAfter(".known_hosts.tmp-").isNotEmpty() -> candidates.add(file)
+                    else -> error("inventory")
+                }
+            }
             // Validate the full resource namespace before either subsystem deletes anything.
             val base = File(filesRoot, "ssh-resources")
             entries(base).forEach { area ->
@@ -656,15 +668,26 @@ class ProfileStore internal constructor(
     }
     /** Stored host-key lines of [id] for `Session.acceptNewHostKeys`; empty when none. Throws on failure. */
     suspend fun trustedHostKeys(id: UUID): ByteArray = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().read(id) } }
-    suspend fun trustedHostKeyCount(id: UUID): Int = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().count(id) } }
+    /** 0 for a profile that no longer exists (for example a draft whose profile was deleted elsewhere). */
+    suspend fun trustedHostKeyCount(id: UUID): Int = withContext(Dispatchers.IO) { synchronized(guard) {
+        if (!java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) 0 else trustedHosts().count(id)
+    } }
     suspend fun forgetTrustedHostKeys(id: UUID): Unit = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().forget(id) } }
     /**
      * Blocking, off Main: persists a host-key line the user trusted. Null when [id] no longer exists, so a
      * profile deleted during its session gets no file back. Throws on an I/O failure.
+     *
+     * Takes [guard], so lock order (guard → draft → resources → gate) forbids calling it with the
+     * `VpnLive.gate` monitor held: never under `synchronized(VpnLive.gate)` or `gate.commit {}`, never from a
+     * `VpnLive.publish*` or the endpoint's gate check. The only caller is `AuthAttempt.deliver` on IO, after
+     * Core accepted the reply, with no lock held. A violation fails closed here instead of deadlocking.
      */
-    internal fun rememberTrustedHostKey(id: UUID, line: String): TrustedHostKeys.Append? = synchronized(guard) {
-        if (!rootValid || !java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) null
-        else trustedHosts().append(id, line)
+    internal fun rememberTrustedHostKey(id: UUID, line: String): TrustedHostKeys.Append? {
+        check(!Thread.holdsLock(VpnLive.gate)) { "Lock order" }
+        return synchronized(guard) {
+            if (!rootValid || !java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) null
+            else trustedHosts().append(id, line)
+        }
     }
     // Transitional callers capture the current revision at their operation boundary, not editor-open time.
     suspend fun save(text: String, id: String? = null, imports: SshDraftResources? = null): Profile {

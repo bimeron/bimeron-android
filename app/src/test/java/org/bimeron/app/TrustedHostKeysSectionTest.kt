@@ -25,6 +25,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class TrustedHostKeysSectionTest {
     @get:Rule val compose = createComposeRule()
+    @get:Rule val temporary = org.junit.rules.TemporaryFolder()
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val id = UUID.randomUUID()
     private var stored = 2
@@ -79,6 +80,24 @@ class TrustedHostKeysSectionTest {
     @Test fun unsavedProfileShowsNothing() {
         show(profileId = "")
         compose.onNodeWithText(forget).assertDoesNotExist()
+    }
+
+    @Test fun deletedProfileShowsZeroAndForgetStaysDisabled() {
+        val base = temporary.root.canonicalFile
+        val store = ProfileStore(null, java.io.File(base, "profiles").apply { mkdirs() }, SshProfileResources(java.io.File(base, "ssh-resources"))) {}
+        val saved = kotlinx.coroutines.runBlocking {
+            store.save(Conf.fromKey("SSH", "ssh://user@ssh.example.com:2222")).also {
+                store.rememberTrustedHostKey(UUID.fromString(it.id), HostKeyFixtures.line())
+                store.delete(it.id)
+            }
+        }
+        compose.setContent {
+            MaterialTheme { TrustedHostKeysSection(saved.id, store::trustedHostKeyCount, store::forgetTrustedHostKeys, true, onFailure = { failures++ }) }
+        }
+        compose.waitUntil(5000) { compose.onAllNodes(androidx.compose.ui.test.hasText(context.getString(R.string.ssh_trusted_host_keys_count, 0))).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText(forget).assertIsNotEnabled()
+        assertEquals(0, failures)
+        assertEquals(emptyList<String>(), java.io.File(base, "trusted-hosts").list()!!.toList())
     }
 
     @Test fun sshDocumentsAreRecognized() {

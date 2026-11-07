@@ -51,6 +51,18 @@ class SshHostKeyOfferTest {
         assertNull(parse("null"))
     }
 
+    @Test fun lineHostIsTheLowercasedDialedHost() {
+        val mixed = offer("SSH.Example.COM:2222")
+        assertEquals("[ssh.example.com]:2222 ", mixed.knownHostsLine.substring(0, 23))
+        assertEquals(mixed, parse(wire(mixed))!!.hostKey)
+        assertEquals("ssh.example.com", offer("SSH.Example.COM:22").knownHostsLine.substringBefore(' '))
+        // The dialed case preserved, or any other host, is not what Core stores and is rejected.
+        rejected(json(fields(mixed).apply {
+            this["knownHostsLine"] = mixed.knownHostsLine.replaceFirst("[ssh.example.com]", "[SSH.Example.COM]")
+        }), "mixed-case line host")
+        assertFalse(SshAuthenticationController.validKnownHostsLine(mixed.knownHostsLine.replaceFirst("ssh", "SSH")))
+    }
+
     @Test fun rejectsWrongShape() {
         mutated("missing line") { remove("knownHostsLine") }
         mutated("missing host") { remove("host") }

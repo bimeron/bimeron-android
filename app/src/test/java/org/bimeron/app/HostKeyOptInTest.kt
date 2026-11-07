@@ -108,6 +108,23 @@ class HostKeyOptInTest {
         assertEquals(1, recorder.lines.size)
     }
 
+    /** Lock order guard → draft → resources → gate: the persist hook (which takes the store guard) holds no lock. */
+    @Test fun persistHookRunsOnIoWithNoGateOrAttemptLockHeld() = runBlocking {
+        val token = attempt()
+        val observed = mutableListOf<String>()
+        lateinit var auth: AuthAttempt
+        auth = AuthAttempt(token, FakeCorePort(wire(offer())), { true }, {}, onHostKeyAccepted = {
+            val attemptLock = AuthAttempt::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(auth)
+            observed += "gate=${Thread.holdsLock(VpnLive.gate)}"
+            observed += "attempt=${Thread.holdsLock(attemptLock)}"
+            observed += "io=${Thread.currentThread().name.startsWith("DefaultDispatcher-worker")}"
+        })
+        VpnAuthEndpoint.register(token, auth)
+        auth.poll()
+        assertEquals(AuthResult.ACCEPTED, VpnAuthEndpoint.reply(token, SESSION, REQUEST_A, SshAuthenticationController.HOST_KEY_ACCEPT))
+        assertEquals(listOf("gate=false", "attempt=false", "io=true"), observed)
+    }
+
     @Test fun nothingIsPersistedWithoutCoreAcceptingTheTrust() = runBlocking {
         val token = attempt()
         val recorder = Recorder()

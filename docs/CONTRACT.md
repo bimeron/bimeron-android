@@ -40,8 +40,8 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
 - `pendingAuth` kind `host_key` is parsed strictly by `SshAuthenticationController.parse`: 48-hex ids;
   `host` from Core's literal alphabet as `host:port` (IPv6 bracketed); a known key type; `SHA256:` plus 43
   unpadded base64 characters equal to the digest of the key in the line; and a `knownHostsLine` of exactly
-  three single-space printable ASCII fields, at most 12 KiB, whose host is the OpenSSH normalization of `host`
-  (bare for port 22, `[host]:port` otherwise, at most 300 characters) and whose type and key blob match
+  three single-space printable ASCII fields, at most 12 KiB, whose host is the OpenSSH normalization of the
+  lowercased dialed `host` (bare for port 22, `[host]:port` otherwise, at most 300 characters) and whose type and key blob match
   `keyType`. Anything else is rejected and never shown. Existing kinds are unchanged.
 - The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace, with
   FLAG_SECURE. Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
@@ -53,10 +53,14 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   journals a fixed WARN.
 - Storage: `filesDir/trusted-hosts/<uuid>.known_hosts`, directory `0700`, file `0600`, one plain line per key,
   replaced atomically (tmp, fsync, `ATOMIC_MOVE`, directory fsync). It is a separate top-level tree, outside
-  `profiles/`, `ssconf/` and `ssh-resources/`, so the fail-closed startup sweep neither inspects it nor skips
-  because of it. Reads return only lines that are valid offer lines, so a damaged file cannot make Core reject
-  the opt-in. `compareAndDelete` removes the file best-effort under the store lock. A new profile, including
-  "Save as new profile", starts with no trusted keys.
+  `profiles/`, `ssconf/` and `ssh-resources/`. Every access holds the store lock and takes no other lock;
+  `rememberTrustedHostKey` must never be called with the `VpnLive.gate` monitor held (lock order guard →
+  draft → resources → gate) and fails closed if it is. Reads return only lines that are valid offer lines, so a
+  damaged file cannot make Core reject the opt-in. `compareAndDelete` removes the file best-effort under the
+  store lock. The fail-closed startup sweep also inventories `trusted-hosts/`: it deletes `<uuid>.known_hosts`
+  files without a `profiles/<uuid>.conf` and leftover `<uuid>.known_hosts.tmp-*` files, and any other entry,
+  directory or symlink makes it delete nothing at all. A new profile, including "Save as new profile", starts
+  with no trusted keys; a deleted profile counts 0 and Forget does nothing.
 - The profile editor's SSH section shows "Trusted server keys: N" with Forget (after a confirmation), which
   deletes the file immediately; it is not part of Save.
 - `Status.LastError` mapping, ahead of the auth-history heuristic: `ssh_host_key_mismatch` →

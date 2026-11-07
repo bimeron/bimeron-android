@@ -26,7 +26,8 @@ internal object HostKeyFixtures {
         val name: String; val port: String
         if (host.startsWith("[")) { name = host.substring(1, host.indexOf("]:")); port = host.substringAfter("]:") }
         else { name = host.substringBeforeLast(':'); port = host.substringAfterLast(':') }
-        return if (port == "22") name else "[$name]:$port"
+        val lower = name.lowercase(java.util.Locale.ROOT)
+        return if (port == "22") lower else "[$lower]:$port"
     }
 
     fun offer(host: String = "ssh.example.com:2222", type: String = "ssh-ed25519", seed: Int = 1): SshAuthenticationController.HostKeyOffer {
