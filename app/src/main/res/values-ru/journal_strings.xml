@@ -7,6 +7,7 @@
     <string name="journal_vpn_permission_denied">Разрешение VPN отклонено</string>
     <string name="journal_recovery_save_failed">Не удалось сохранить состояние восстановления VPN</string>
     <string name="journal_recovery_needs_user">VPN не восстановлен автоматически: профилю может потребоваться вход</string>
+    <string name="journal_recovery_ssconf_unavailable">VPN не восстановлен автоматически: нет пригодной сохранённой конфигурации ssconf</string>
     <string name="journal_vpn_connecting">Подключение VPN начато</string>
     <string name="journal_vpn_connected">VPN подключён</string>
     <string name="journal_vpn_reconnecting">VPN переподключается</string>
@@ -15,4 +16,5 @@
     <string name="journal_vpn_failed">Ошибка VPN</string>
     <string name="journal_vpn_failed_detail">Ошибка VPN: %1$s</string>
     <string name="journal_trusted_host_key_not_saved">Доверенный ключ сервера не сохранён; при следующем подключении его нужно будет подтвердить снова</string>
+    <string name="journal_ssconf_fallback">Не удалось обновить ssconf (%1$s); подключение с сохранённой конфигурацией</string>
 </resources>

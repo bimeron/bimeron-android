@@ -15,10 +15,9 @@
     <string name="vpn_error_auth_unanswered">Запрос аутентификации SSH истёк или был отозван.</string>
     <string name="vpn_error_auth_cancelled">Аутентификация SSH отменена.</string>
     <string name="vpn_error_recovery_needs_user">Откройте приложение для повторного подключения.</string>
-    <string name="vpn_error_ssconf_network_unavailable">Нет доступной сети для SSConf.</string>
-    <string name="vpn_error_ssconf_fetch_failed">Не удалось загрузить SSConf.</string>
-    <string name="vpn_error_ssconf_snapshot_invalid">Снимок SSConf недействителен.</string>
-    <string name="vpn_error_ssconf_consent_required">Для обновления SSConf требуется разрешение на VPN.</string>
+    <string name="vpn_error_ssconf_network_unavailable">Нет доступной сети для ssconf.</string>
+    <string name="vpn_error_ssconf_fetch_failed">Не удалось загрузить ssconf.</string>
+    <string name="vpn_error_ssconf_snapshot_invalid">Снимок ssconf недействителен.</string>
     <string name="vpn_error_start_failed">Не удалось запустить VPN.</string>
     <string name="vpn_error_stop_failed">VPN неожиданно остановлен.</string>
     <string name="vpn_error_host_key_mismatch">Ключ сервера изменился. Подключение отклонено для вашей защиты. Если сервер действительно был переустановлен, забудьте его доверенные ключи в редакторе профиля или импортируйте обновлённый файл known_hosts и подключитесь снова.</string>

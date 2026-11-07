@@ -42,7 +42,8 @@ class RecoveryStartTest {
         override suspend fun clearRecovery(): Boolean { effects += "clear"; recoveryId = null; return true }
         override fun postNotification() { effects += "post"; notificationShown = true }
         override fun cancelNotification() { effects += "cancel"; notificationShown = false }
-        override fun recordSkip() { effects += "journal" }
+        val journal = mutableListOf<Int>()
+        override fun recordSkip(message: Int) { effects += "journal"; journal += message }
         override fun publishSkipped(token: Long) {
             effects += "publish"
             VpnLive.publish(recoverySkippedState { "fixed" }, token)
@@ -60,6 +61,61 @@ class RecoveryStartTest {
         assertTrue(port.notificationShown)
         assertEquals(VpnErrorCode.RECOVERY_NEEDS_USER, VpnLive.state.value.code)
         assertNull(VpnLive.state.value.attemptProfileId)
+    }
+
+    private val ssconfSource = "ssconf://config.example/recovery-secret"
+    private val ssconfText = Conf.fromKey("Home ssconf", ssconfSource)
+    private val body = "ss://YWVzLTEyOC1nY206c2VjcmV0@192.0.2.10:8388".toByteArray()
+
+    /** An ssconf read as the store returns it, with or without a persisted snapshot. */
+    private fun ssconfInput(snapshot: Boolean): SessionInput {
+        val id = UUID.randomUUID()
+        val bytes = ssconfText.toByteArray(Charsets.UTF_8)
+        return SessionInput(id, bytes, ProfileRevision(1, 1), Sha256.of(bytes), SSConfBinding(ssconfSource),
+            SnapshotTicket(id, ssconfSource, 1) { true }, if (snapshot) StoredSnapshot(body, Sha256.of(body), 1L) else null)
+    }
+
+    @Test fun interactiveSkipJournalsTheSignInReason() = runBlocking {
+        val port = FakePort { _, _ -> input(sshText) }
+        assertEquals(StartPlan.Skipped, planStart(true, "id", VpnLive.nextAttempt(), port))
+        assertEquals(listOf(R.string.journal_recovery_needs_user), port.journal)
+    }
+
+    /** A recovery never fetches, so an ssconf profile without a persisted snapshot is skipped like an interactive one. */
+    @Test fun ssconfRecoveryWithoutSnapshotIsSkippedWithNotificationAndJournal() = runBlocking {
+        val port = FakePort { _, _ -> ssconfInput(snapshot = false) }
+        val token = VpnLive.nextAttempt()
+        assertEquals(StartPlan.Skipped, planStart(true, "id", token, port))
+        assertEquals(listOf("read", "clear", "post", "journal", "publish"), port.effects)
+        assertEquals(listOf(R.string.journal_recovery_ssconf_unavailable), port.journal)
+        assertNull(port.recoveryId)
+        assertTrue(port.notificationShown)
+        assertEquals(VpnErrorCode.RECOVERY_NEEDS_USER, VpnLive.state.value.code)
+    }
+
+    /**
+     * The service path: planStart hands a recovery its classified read, [isRecoveryStart] derives the snapshot
+     * rule from it, and that recovery reuses the persisted snapshot without fetching. A user start fetches once.
+     */
+    @Test fun recoveryStartThroughTheServicePathNeverFetches() = runBlocking {
+        val stored = ssconfInput(snapshot = true)
+        val recoveryPlan = planStart(true, stored.id.toString(), VpnLive.nextAttempt(), FakePort { _, _ -> stored })
+        val classified = (recoveryPlan as StartPlan.Proceed).input
+        assertSame(stored, classified)
+        val userPlan = planStart(false, stored.id.toString(), VpnLive.nextAttempt(), FakePort { _, _ -> fail("read"); null })
+        assertNull((userPlan as StartPlan.Proceed).input)
+        for ((plan, expectedFetches) in listOf(classified to 0, userPlan.input to 1)) {
+            var fetches = 0
+            val token = VpnLive.nextAttempt()
+            val input = sessionInputFor(plan, stored.id.toString(), token) { stored }
+            val snapshot = resolveSessionSnapshot(input.ticket!!, input.snapshot, isRecoveryStart(plan),
+                ensureAttempt = { ensureSessionAttempt(token) }, validate = { String(it) },
+                fetch = { fetches++; throw SSConfFailure(VpnErrorCode.SSCONF_FETCH_FAILED) },
+                discard = { _, _ -> fail("discarded") }, commit = { _, _ -> fail("committed"); SnapshotCommitResult.NotPersisted },
+                warn = {}, onFallback = {})
+            assertEquals(String(body), snapshot)
+            assertEquals(expectedFetches, fetches)
+        }
     }
 
     @Test fun absentRecoveryInputIsSkipped() = runBlocking {

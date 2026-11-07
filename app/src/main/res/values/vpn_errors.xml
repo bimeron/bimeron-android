@@ -15,10 +15,9 @@
     <string name="vpn_error_auth_unanswered">The SSH authentication request expired or was withdrawn.</string>
     <string name="vpn_error_auth_cancelled">SSH authentication was cancelled.</string>
     <string name="vpn_error_recovery_needs_user">Open the app to reconnect.</string>
-    <string name="vpn_error_ssconf_network_unavailable">No network is available for SSConf.</string>
-    <string name="vpn_error_ssconf_fetch_failed">Could not fetch SSConf.</string>
-    <string name="vpn_error_ssconf_snapshot_invalid">The SSConf snapshot is invalid.</string>
-    <string name="vpn_error_ssconf_consent_required">VPN permission is required to refresh SSConf.</string>
+    <string name="vpn_error_ssconf_network_unavailable">No network is available for ssconf.</string>
+    <string name="vpn_error_ssconf_fetch_failed">Could not fetch ssconf.</string>
+    <string name="vpn_error_ssconf_snapshot_invalid">The ssconf snapshot is invalid.</string>
     <string name="vpn_error_start_failed">Could not start VPN.</string>
     <string name="vpn_error_stop_failed">VPN stopped unexpectedly.</string>
     <string name="vpn_error_host_key_mismatch">The server\'s host key has changed. The connection was refused to protect you. If the server was legitimately reinstalled, forget its trusted server keys in the profile editor, or import an updated known_hosts file, and connect again.</string>

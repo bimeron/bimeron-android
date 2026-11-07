@@ -1,6 +1,7 @@
 package org.bimeron.app
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -53,10 +54,19 @@ internal typealias SSConfLeaseScope = suspend (block: (SSConfFetchLease) -> Byte
  * Coroutine cancellation is rethrown as is. Native load Errors ([LinkageError]) are not mapped and
  * propagate out of [fetchSSConf]; [resolveSessionSnapshot] maps them to [VpnErrorCode.CORE_INCOMPATIBLE].
  */
-internal suspend fun fetchSSConf(context: Context, source: String): ByteArray = fetchSSConf(
+internal suspend fun fetchSSConf(context: Context, source: String): ByteArray =
+    fetchSSConf(context, source, ::coreSSConfRequest)
+
+/**
+ * [fetchSSConf] with the production lease scope and socket protection, and only the native Core request
+ * replaced by [newRequest]. For instrumentation (SSConfConnectFetchTest): Core accepts only HTTPS with a
+ * system-trusted certificate, which a test endpoint cannot have.
+ */
+@VisibleForTesting
+internal suspend fun fetchSSConf(context: Context, source: String, newRequest: SSConfRequestFactory): ByteArray = fetchSSConf(
     source,
     leaseScope = { block -> withSSConfNetwork(context) { lease -> block(lease.asFetchLease()) } },
-    newRequest = ::coreSSConfRequest,
+    newRequest = newRequest,
 )
 
 /**
@@ -131,45 +141,86 @@ private fun SSConfFetchLease.protector() = object : SSConfSocketProtector {
     override fun bind(fd: Long): Boolean = this@protector.bind(fd)
 }
 
+/** Fetch outcomes after which a user connect may fall back to the stored snapshot (contract §7.2). */
+private val FALLBACK_CODES = setOf(
+    VpnErrorCode.SSCONF_FETCH_FAILED,
+    VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE,
+    VpnErrorCode.SSCONF_SNAPSHOT_INVALID,
+)
+
 /**
- * Obtains the Core snapshot handle for an SSConf session attempt (contract §7.2 step 2).
+ * Obtains the Core snapshot handle for an ssconf session attempt (contract §7.2 step 2).
  *
- * - A [stored] snapshot is reused without network access. If [validate] rejects it, it is discarded
- *   through [discard] and treated as absent.
- * - When absent, exactly one [fetch] runs. A body outside 1..[SSConfSnapshots.MAX_BODY] or rejected by
- *   [validate] fails with [VpnErrorCode.SSCONF_SNAPSHOT_INVALID] and is never committed.
- * - A validated fetched body is committed: [SnapshotCommitResult.Committed] continues,
- *   [SnapshotCommitResult.NotPersisted] continues with the in-memory body after [warn] records
- *   [SNAPSHOT_NOT_PERSISTED], and any [SnapshotCommitResult.Conflict] fails with
- *   [VpnErrorCode.PROFILE_CHANGED].
+ * - A user connect ([recovery] false) always runs exactly one [fetch], with no retry. A body outside
+ *   1..[SSConfSnapshots.MAX_BODY] or rejected by [validate] counts as [VpnErrorCode.SSCONF_SNAPSHOT_INVALID]
+ *   and is never committed. A validated body is committed: [SnapshotCommitResult.Committed] continues with
+ *   it, [SnapshotCommitResult.NotPersisted] continues with the in-memory body after [warn] records
+ *   [SNAPSHOT_NOT_PERSISTED], and any [SnapshotCommitResult.Conflict] fails with [VpnErrorCode.PROFILE_CHANGED].
+ * - When that fetch fails with [VpnErrorCode.SSCONF_FETCH_FAILED], [VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE]
+ *   or [VpnErrorCode.SSCONF_SNAPSHOT_INVALID], the [stored] snapshot is used if [validate] accepts it, and
+ *   [onFallback] receives the fetch's code. A stored snapshot that [validate] rejects is discarded through
+ *   [discard]. With no usable stored snapshot the attempt fails with the fetch's code.
+ * - A recovery start ([recovery] true) never fetches: it uses the [stored] snapshot if [validate] accepts it,
+ *   discards a rejected one, and otherwise fails with [VpnErrorCode.RECOVERY_NEEDS_USER] (the next user
+ *   connect fetches).
  *
  * [ensureAttempt] runs before the first step and after every suspension point; it throws
  * [CancellationException] for a stale attempt, so a commit conflict caused by a stale attempt is
- * cancellation rather than [VpnErrorCode.PROFILE_CHANGED]. [validate] throws when Core rejects a body.
+ * cancellation rather than [VpnErrorCode.PROFILE_CHANGED]. Cancellation always propagates and never
+ * falls back. [validate] throws when Core rejects a body.
  *
  * This step runs before the capability check, so a native load failure from [validate] or [fetch]
  * (see [isNativeLoadFailure]) fails with [VpnErrorCode.CORE_INCOMPATIBLE] instead of escaping as an
- * [Error]. The mapping covers only those two Core calls: any [Error] from [ensureAttempt], [discard]
- * or [commit], and every other error, propagates.
+ * [Error], with no fallback. The mapping covers only those two Core calls: any [Error] from
+ * [ensureAttempt], [discard] or [commit], and every other error, propagates.
  */
 internal suspend fun <T> resolveSessionSnapshot(
     ticket: SnapshotTicket,
     stored: StoredSnapshot?,
+    recovery: Boolean,
     ensureAttempt: suspend () -> Unit,
     validate: suspend (ByteArray) -> T,
     fetch: suspend () -> ByteArray,
     discard: suspend (SnapshotTicket, Sha256) -> Unit,
     commit: suspend (SnapshotTicket, ByteArray) -> SnapshotCommitResult,
     warn: (String) -> Unit,
+    onFallback: (VpnErrorCode) -> Unit,
 ): T {
-    ensureAttempt()
-    if (stored != null) {
+    /** The stored snapshot if Core accepts it; a rejected one is discarded. */
+    suspend fun usableStored(): T? {
+        if (stored == null) return null
         val reused = validateOrNull(validate, stored.body)
         ensureAttempt()
         if (reused != null) return reused
         discard(ticket, stored.digest)
         ensureAttempt()
+        return null
     }
+
+    ensureAttempt()
+    if (recovery) return usableStored() ?: throw SSConfFailure(VpnErrorCode.RECOVERY_NEEDS_USER)
+    val failure = try {
+        return fetchAndCommit(ticket, ensureAttempt, validate, fetch, commit, warn)
+    } catch (failure: SSConfFailure) {
+        if (failure.code !in FALLBACK_CODES) throw failure
+        failure
+    }
+    // A stale attempt stops here instead of validating the stored snapshot.
+    ensureAttempt()
+    val fallback = usableStored() ?: throw failure
+    onFallback(failure.code)
+    return fallback
+}
+
+/** One bounded fetch, Core validation and commit for a user connect; see [resolveSessionSnapshot]. */
+private suspend fun <T> fetchAndCommit(
+    ticket: SnapshotTicket,
+    ensureAttempt: suspend () -> Unit,
+    validate: suspend (ByteArray) -> T,
+    fetch: suspend () -> ByteArray,
+    commit: suspend (SnapshotTicket, ByteArray) -> SnapshotCommitResult,
+    warn: (String) -> Unit,
+): T {
     val body = coreCall(fetch)
     ensureAttempt()
     if (body.size !in 1..SSConfSnapshots.MAX_BODY) throw SSConfFailure(VpnErrorCode.SSCONF_SNAPSHOT_INVALID)
@@ -205,25 +256,30 @@ private suspend fun <T> validateOrNull(validate: suspend (ByteArray) -> T, body:
 }
 
 /**
- * The service's snapshot step for one SSConf attempt: Core validates on IO, [store] discards and
- * commits, and [fetch] runs only when no persisted snapshot is usable. Holds no store guard or
- * attempt monitor across JNI or the network.
+ * The service's snapshot step for one ssconf attempt: a user connect ([recovery] false) runs one bounded
+ * [fetch] and falls back to the persisted snapshot only when that fetch fails; a recovery start uses the
+ * persisted snapshot only. Core validates on IO and [store] discards and commits. A fallback records a
+ * fixed journal note with the fetch's code only. Holds no store guard or attempt monitor across JNI or
+ * the network.
  */
 internal suspend fun loadSessionSnapshot(
     store: ProfileStore,
     input: SessionInput,
     token: Long,
+    recovery: Boolean,
     fetch: suspend (source: String) -> ByteArray,
 ): SSConfSnapshot {
     val source = requireNotNull(input.ssconf).source
     return resolveSessionSnapshot(
         ticket = requireNotNull(input.ticket),
         stored = input.snapshot,
+        recovery = recovery,
         ensureAttempt = { ensureSessionAttempt(token) },
         validate = { body -> withContext(Dispatchers.IO) { Androidcore.newSSConfSnapshot(source, body) } },
         fetch = { withContext(Dispatchers.IO) { fetch(source) } },
         discard = store::discardSnapshot,
         commit = store::commitSnapshot,
         warn = { code -> AppEvents.add(code, LogLevel.WARNING) },
+        onFallback = { code -> AppEvents.add(R.string.journal_ssconf_fallback, LogLevel.WARNING, code.name) },
     )
 }
