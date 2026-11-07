@@ -14,6 +14,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,8 +48,9 @@ class BimeronVpnService : VpnService() {
         internal const val RECOVERY = "vpn_recovery"
         internal const val ACTIVE_ID = "active_id"
         private const val VPN_NOTIFICATION_ID = 1
-        private const val RECOVERY_CHANNEL = "vpn_recovery"
+        internal const val RECOVERY_CHANNEL = "vpn_recovery"
         internal const val RECOVERY_NOTIFICATION_ID = 2
+        internal const val DROP_NOTIFICATION_ID = 3
 
         /**
          * Notification tap target. SINGLE_TOP + CLEAR_TOP bring the running MainActivity forward (onNewIntent)
@@ -57,6 +59,35 @@ class BimeronVpnService : VpnService() {
         internal fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(context, 0,
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        /**
+         * The "VPN disconnected" notice (M-1, see [shouldNotifyDrop]). Fixed text only: no profile name, id, server,
+         * Core or error text. With notifications off (POST_NOTIFICATIONS not granted on API 33+, or turned off in
+         * system settings) nothing is posted; the in-app state still carries the failure code.
+         */
+        internal fun dropNoticeFor(context: Context): DropNotice = object : DropNotice {
+            override fun post() {
+                runCatching {
+                    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return@runCatching
+                    val text = context.getString(R.string.vpn_drop_notification_text)
+                    val notification = NotificationCompat.Builder(context, RECOVERY_CHANNEL)
+                        .setSmallIcon(R.drawable.ic_stat_bimeron)
+                        .setContentTitle(context.getString(R.string.vpn_drop_notification_title))
+                        .setContentText(text)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                        .setCategory(NotificationCompat.CATEGORY_STATUS)
+                        // The text is fixed and non-secret, so it may show in full on the lock screen.
+                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                        .setContentIntent(openAppIntent(context))
+                        .setAutoCancel(true)
+                        .build()
+                    context.getSystemService(NotificationManager::class.java).notify(DROP_NOTIFICATION_ID, notification)
+                }
+            }
+            override fun cancel() {
+                runCatching { context.getSystemService(NotificationManager::class.java).cancel(DROP_NOTIFICATION_ID) }
+            }
+        }
     }
 
     private sealed interface Command {
@@ -64,7 +95,8 @@ class BimeronVpnService : VpnService() {
         data class Start(val id: String, val startId: Int, val force: Boolean, val recovery: Boolean) : Command
         data class Stop(val startId: Int) : Command
         data class Invalid(val startId: Int, val reportError: Boolean) : Command
-        data class Finished(val token: Long) : Command
+        /** [connected]: the attempt reached `connected`; [recovery]: it was a recovery start (see [shouldNotifyDrop]). */
+        data class Finished(val token: Long, val connected: Boolean, val recovery: Boolean) : Command
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -121,6 +153,7 @@ class BimeronVpnService : VpnService() {
     private var runJob: Job? = null
     private val cleanupFailed: Boolean get() = NativeCleanupGate.blocked
     @Volatile private var foreground = false
+    private val dropNotice = dropNoticeFor(this)
 
     override fun onCreate() {
         super.onCreate()
@@ -234,7 +267,7 @@ class BimeronVpnService : VpnService() {
                 }
                 is Command.Start -> {
                     acceptedStartId = command.startId
-                    noteStartCommand(command.recovery, recoveryPort)
+                    noteStartCommand(command.recovery, recoveryPort, dropNotice)
                     val current = VpnLive.state.value
                     if (!command.force && runJob?.isActive == true && command.id == (current.activeProfileId ?: current.attemptProfileId)) continue
                     // A new token cannot clear the old offer, so it is cleared with the gate advance.
@@ -295,6 +328,8 @@ class BimeronVpnService : VpnService() {
                     if (failure != null) {
                         VpnLive.publish(failureState(failure, current.attemptProfileId), command.token)
                     } else if (VpnLive.state.value.state != "failed") VpnLive.publish(VpnState(), command.token)
+                    // M-1: a session that ended on its own after connecting (or an unattended recovery) is announced.
+                    noteSessionFinished(command.token, current.code, command.connected, command.recovery, dropNotice)
                     leaveForeground(acceptedStartId)
                 }
             }
@@ -339,6 +374,7 @@ class BimeronVpnService : VpnService() {
     /** [classified] is the recovery start's classified read; a user start passes null and reads here. */
     private suspend fun runSession(id: String, token: Long, classified: SessionInput?) {
         var ownsNative = false
+        var reachedConnected = false
         var current: Session? = null
         var tun: ParcelFileDescriptor? = null
         var callback: ConnectivityManager.NetworkCallback? = null
@@ -422,7 +458,11 @@ class BimeronVpnService : VpnService() {
             while (currentCoroutineContext().isActive) {
                 auth.poll()
                 val state = publishStatus(session, id, token, auth)
-                if (state == "connected") break
+                if (state == "connected") {
+                    reachedConnected = true
+                    dropNotice.cancel()
+                    break
+                }
                 if (state == "failed" || state == "disconnected") throw SessionFailure(VpnErrorCode.CORE_CONNECT_FAILED)
                 delay(statusTickMillis(connected = false, token))
             }
@@ -480,7 +520,7 @@ class BimeronVpnService : VpnService() {
                 packetScope.cancel()
                 val cleaned = finishPacketWorkers(listOfNotNull(input, output)) { current?.stop() }
                 if (ownsNative) NativeCleanupGate.completed(cleaned)
-                commands.trySend(Command.Finished(token))
+                commands.trySend(Command.Finished(token, reachedConnected, isRecoveryStart(classified)))
             }
         }
     }

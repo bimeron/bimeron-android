@@ -5,6 +5,9 @@
     <string name="vpn_notification_text">Connection active</string>
     <string name="vpn_recovery_notification_channel">VPN reconnect</string>
     <string name="vpn_recovery_notification_text">Tap to reconnect</string>
+    <!-- Posted when an established session ends without the user stopping it (audit M-1). Fixed text: no profile or server. -->
+    <string name="vpn_drop_notification_title">VPN disconnected</string>
+    <string name="vpn_drop_notification_text">Your traffic is no longer protected by Bimeron. Tap to open the app.</string>
     <string name="core_error">The core could not establish a connection</string>
     <string name="connection">Connection</string>
     <string name="profiles">Profiles</string>

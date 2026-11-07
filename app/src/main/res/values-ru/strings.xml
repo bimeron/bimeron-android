@@ -4,6 +4,8 @@
     <string name="vpn_notification_text">Подключение активно</string>
     <string name="vpn_recovery_notification_channel">Переподключение VPN</string>
     <string name="vpn_recovery_notification_text">Нажмите, чтобы переподключиться</string>
+    <string name="vpn_drop_notification_title">VPN отключён</string>
+    <string name="vpn_drop_notification_text">Bimeron больше не защищает ваш трафик. Нажмите, чтобы открыть приложение.</string>
     <string name="core_error">Ядро не смогло установить соединение</string>
     <string name="connection">Подключение</string>
     <string name="profiles">Профили</string>
