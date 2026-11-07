@@ -1,8 +1,8 @@
 # Embedded Android core
 
 Source: https://github.com/bimeron/bimeron-core
-Revision: core master `d9fd7f40d618a52893d1f30d1f73a962ab28fed0` (the merge of core
-PR #108).
+Revision: core master `774dec88f02b7a7b3d41998d829f0fe2ce0a52fd` (the merge of core
+PR #109).
 
 Changes relative to the previously pinned revision `8fad07c` (core PR #104), by core
 pull request:
@@ -11,13 +11,19 @@ pull request:
   `-ffile-prefix-map=$ANDROID_NDK_HOME=/android-ndk` to cgo, so the NDK install path
   is no longer embedded in the native debug info. No Go source or API change.
 - #108: test only. Adds `androidcore/validation_leak_test.go`, which is not linked
-  into the AAR; a build of `aefaff4` (#107) through the same canonical path is
-  byte-identical to this artifact.
+  into the AAR; builds of `aefaff4` (#107) and `d9fd7f4` (#108) through the same
+  canonical path are byte-identical (AAR SHA-256
+  `e14a164977e5ef94566ab9671d6d08cb21282cf5a24271ad987f165a6cc90607`).
+- #109: caps ssconf HTTP response headers at 64 KiB (Go's default is 10 MiB) in
+  `core/ssconf.go`, `core/bootstrap.go` and `accesskey.NewResolver`. No Android API
+  change (`classes.jar` is byte-identical) and no new error code: an oversized header
+  block fails like any other access-key fetch error, as the existing retryable
+  `access_key_resolve_failed`.
 
 SHA-256 of `app/libs/bimeron-core.aar`:
 
 ```text
-e14a164977e5ef94566ab9671d6d08cb21282cf5a24271ad987f165a6cc90607
+93eb73a254dab98751623b40860a18549827984fa4615f3d7116b9751962615f
 ```
 
 Build requirements: Go 1.26.9, Android Studio OpenJDK 21.0.3 (runtime/VM build `21.0.3+-79915917-b509.11`), Android SDK 34, NDK 27.1.12297006, and gomobile `v0.0.0-20261011034528-197770444867`.
@@ -54,7 +60,7 @@ checkout), then run the rebuild helper from this repository. It builds the AAR t
 and fails unless both builds are byte-identical:
 
 ```sh
-REV=d9fd7f40d618a52893d1f30d1f73a962ab28fed0
+REV=774dec88f02b7a7b3d41998d829f0fe2ce0a52fd
 CORE_SOURCE=/path/to/bimeron-core            # any clone containing $REV
 BASE=/path/to/empty/work/dir                 # any location
 git -C "$CORE_SOURCE" cat-file -e "$REV^{commit}"
@@ -104,17 +110,17 @@ handling, signal cleanup, the working-directory/`PWD` wiring, the environment
 filtering, the NDK path normalisation and, in a scratch git repository tagged
 `v9.9.9`, that the version detection finds no tag, all without a real build.
 
-Location independence was checked on one macOS host. Archives of `aefaff4` were
-extracted to `bimeron-artifacts/aar-canonical/src-a/source` and
-`bimeron-artifacts/aar-canonical/deeper/path/src-b/source`, and an archive of
-`d9fd7f4` to `bimeron-artifacts/aar-canonical/other/src-c/source`. All six helper
-builds (two per directory, each directory with its own empty Go build cache) produced
-the hash above, with identical `classes.jar` and `libgojni.so` payloads. After the
-environment hardening, `d9fd7f4` was rebuilt from inside a scratch git checkout tagged
-`v9.9.9` (where `git describe` from the source finds `v9.9.9`), with the caller
-environment polluted by `BIMERON_VERSION=9.9.9`, `CGO_CFLAGS=-O0`, `CGO_LDFLAGS=-s`,
-`GOFLAGS=-mod=mod`, `GOAMD64=v3`, `GO386=softfloat`, `GOEXPERIMENT` and a
-slash-terminated `ANDROID_NDK_HOME`; both builds again produced the hash above. `strings` on each
+Location independence was checked on one macOS host with the hardened helper. Archives
+of `774dec8` were extracted to `bimeron-artifacts/aar-canonical/r774/plain/deeper/src-p/source`
+(clean environment) and to `bimeron-artifacts/aar-canonical/r774/tagged-checkout/core/source`,
+inside a scratch git checkout tagged `v9.9.9` where `git describe` from the source finds
+`v9.9.9`. The second run's caller environment was polluted with `BIMERON_VERSION=9.9.9`,
+`CGO_CFLAGS=-O0`, `CGO_LDFLAGS=-s`, `GOFLAGS=-mod=mod`, `GOAMD64=v3`, `GO386=softfloat`,
+`GOEXPERIMENT` and a slash-terminated `ANDROID_NDK_HOME`. All four helper builds (two
+per directory, each directory with its own empty Go build cache) produced the hash
+above, with identical `classes.jar` and `libgojni.so` payloads. Earlier, three
+directories of `aefaff4`/`d9fd7f4` had likewise produced one identical hash among
+themselves. `strings` on each
 `libgojni.so` finds no `/Users/` path and no NDK install path; the only source path
 is `/var/tmp/bimeron-core-src` (the core module and `third_party/apernet-quic-go`,
 `third_party/hysteria-core` and `third_party/quic-go`), and NDK headers appear as
@@ -134,10 +140,10 @@ Payload SHA-256 values:
 
 ```text
 cf01e16e0aaae15c7036d46aff0f360f623ab0543e4c4e47389eb2cf78614395  classes.jar
-caff96bd4eb7622bcc7407d960923b4bac33e2407dcb73204f17dd8a0f6f805d  jni/armeabi-v7a/libgojni.so
-1adc8f4804c3dfa4cbac1cc8b982cc5921d594d4fb287931bf290a6437328878  jni/arm64-v8a/libgojni.so
-db34520432c564e1af5064fbac592c70b73f0423be41b156c9ea701b03324aa3  jni/x86/libgojni.so
-236a356e2a2f5e7f38b93a8b3e2ae86c641afc8c5eb048245e023fc65ad0c9a8  jni/x86_64/libgojni.so
+aa650703d97f85ca762a99081481cd305ede7015397b084ce2ce36bf155359e4  jni/armeabi-v7a/libgojni.so
+56a63b244429d7d8de56e03f4d5d78f30888ca04fc880608166d6c74ec0055c4  jni/arm64-v8a/libgojni.so
+3253ef51ce69152ff4fb629a2fe246a43c7a257d3cf45e3db2fe9faee56c9095  jni/x86/libgojni.so
+a8190816b13e1c624334ff44111165a1ac9001a0391a06fb095a4d67c850512e  jni/x86_64/libgojni.so
 ```
 
 All four ABIs pass `scripts/native_alignment.py`: PT_LOAD 16 KiB
@@ -149,9 +155,8 @@ entries equal the AAR payloads and pass `native_alignment.py` and build-tools 35
 Compared with the previous artifact (core `8fad07c`, AAR SHA-256
 `3b30cbc58c6d73af48c4e80daddb791a39825cf185c4bb6a11b3052454da2aa9`), `classes.jar`
 is byte-identical, so the public API (`javap -public -s`) is unchanged. The four
-`libgojni.so` files differ: the embedded source and NDK paths are now shorter, which
-shrinks `.go.buildinfo` and `.rodata` and moves data addresses. `.text` and
-`.gopclntab` keep their sizes, and `.gopclntab` is byte-identical.
+`libgojni.so` files differ because of the #109 code change and because the embedded
+source and NDK paths are now shorter.
 
 The API introduced at `8fad07c`, compared with core `61fa8a0` (AAR SHA-256
 `d95e9aa7631d31985e76534bf94aa364e5554257cdc582250ca703ae99372535`), is purely
