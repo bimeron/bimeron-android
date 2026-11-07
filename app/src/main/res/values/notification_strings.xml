@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings row shown while app notifications are off (POST_NOTIFICATIONS, see docs/QA.md). -->
+    <string name="notifications_section_title">Notifications</string>
+    <string name="notifications_off_title">Notifications are off</string>
+    <string name="notifications_off_hint">Turn them on to see the VPN status and the reconnect reminder after a restart.</string>
+    <string name="notifications_open_settings">Open settings</string>
+</resources>
