@@ -38,6 +38,19 @@ Opening the editor goes through `AppModel.openEditor`, which records the store r
 
 `EditorDraft.editGeneration` advances on every text change, pending form edit toggle and undo. A validation or save result for a replaced or further-edited draft neither closes the editor nor replaces its message; a queued save for such a draft is dropped. A successful save closes the editor; the base is never advanced in place. Every commit takes a new store revision, so a draft left open after its own save conflicts on the next save until it is reopened.
 
+### Three-way merge rules
+
+`ProfileMerge` (pure Kotlin, no Android dependencies) merges three texts: the base (the text the draft was opened or last rebased at), mine (the draft) and theirs (the latest stored text). It works on `ConfigDocument` fields:
+
+- A field is a `(section, key)` of a non-rule section. Values are compared unquoted, so quoting, spacing and key order are not changes. A missing key is a value too, so deleting a key on one side and changing it on the other is a conflict.
+- A field changed on one side only takes that side's value automatically. A field changed on both sides to the same value is not a conflict. A field changed on both sides to different values is a conflict, and the user picks mine or theirs for it.
+- A section removed on one side and untouched on the other is removed. A section removed on one side and edited on the other is a single section conflict: mine or theirs applies to the whole section.
+- The `[Rule]` list is one field, because rule order is priority and disabled rules are blocks. It is compared verbatim (comments and disabled state included, trailing whitespace ignored). If only mine changed it, mine's rule blocks are carried over verbatim. If both sides changed it, a change with the same meaning (enabled state and values), or a cosmetic-only change on one side, merges; anything else is one rule-list conflict.
+- If any of the three texts does not parse, the merge falls back to one whole-text conflict between mine and theirs (no conflict if they are identical).
+- The merged text is built on theirs, so theirs' comments and layout are kept. Comment edits in mine are carried only inside rule blocks taken from mine; the merge reports when mine changed comments.
+- Secrets: every value is treated as secret, except a fixed list the editor shows in clear (profile name and version, server, port, method, plugin, type, interface settings, default route and rule `Domain`/`CIDR`/`Action`). Whole-text values are always secret. The presentation model shows a fixed-length mask for secrets until the user reveals that conflict.
+- Imported SSH files (`/bimeron-import/<uuid>` placeholders) are ordinary values of `IdentityFile`/`KnownHostsFile`, so a placeholder in mine survives whenever mine's value is chosen or carried.
+
 ## Verification
 
 Unit tests cover line preservation, disabled-rule round trips, source/destination replacement, rule priority changes, escaping, malformed input, draft undo and configuration-change detection. Device tests cover offline validation with the deployed AAR, rollback on invalid save, draft retention across Activity recreation and discard confirmation.
