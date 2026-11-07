@@ -1,9 +1,14 @@
 package org.bimeron.app
 
+import android.Manifest
 import android.animation.ValueAnimator
+import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -62,13 +67,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 
 class MainActivity : ComponentActivity() {
     private val model: AppModel by viewModels()
@@ -116,11 +125,42 @@ class MainActivity : ComponentActivity() {
             model.log(getString(R.string.journal_vpn_permission_denied), LogLevel.WARNING)
         }
     }
+    // POST_NOTIFICATIONS (decision #1, 2026-11-07): asked once after the first successful connect, see NotificationPolicy.
+    private val notificationPrompt by lazy {
+        NotificationPrompt(NotificationPromptStore(applicationContext)) { NotificationManagerCompat.from(applicationContext).areNotificationsEnabled() }
+    }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { notificationPrompt.refresh() }
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         JournalRuntime.start(applicationContext)
-        setContent { BimeronApp(model, export, ::launchExport, onImport = { confDocument.launch(arrayOf("text/*", "application/octet-stream", "*/*")) }, onPower = { toggleVpn() }, onSwitch = { startVpn(it) }, onApply = { startVpn(it, true) }) }
+        // Only while resumed: the VPN consent dialog pauses this Activity, so the two prompts never overlap.
+        // A recreated Activity sees the committed flag and does not ask again.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                VpnLive.state.distinctUntilChangedBy { it.state }.collect { vpn ->
+                    notificationPrompt.onVpnState(vpn.state, model.pendingPermissionId != null, ::requestNotificationPermission)
+                }
+            }
+        }
+        setContent { BimeronApp(model, export, ::launchExport, onImport = { confDocument.launch(arrayOf("text/*", "application/octet-stream", "*/*")) }, onPower = { toggleVpn() }, onSwitch = { startVpn(it) }, onApply = { startVpn(it, true) },
+            notificationsOff = notificationPrompt.showOffRow, onNotificationSettings = ::openNotificationSettings) }
+    }
+    override fun onResume() {
+        super.onResume()
+        // Notifications may have been turned on or off in system settings while the app was in the background.
+        notificationPrompt.refresh()
+    }
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        try { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        catch (_: ActivityNotFoundException) { notificationPrompt.refresh() }
+    }
+    private fun openNotificationSettings() {
+        try { startActivity(NotificationPolicy.settingsIntent(packageName)) }
+        catch (_: ActivityNotFoundException) {
+            runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))) }
+        }
     }
     private fun toggleVpn() {
         val state = VpnLive.state.value.state
@@ -158,7 +198,8 @@ internal val darkScheme = darkColorScheme(primary = Color(0xFF9AC1FF), onPrimary
 internal enum class Page { CONNECTION, JOURNAL, SETTINGS, ABOUT, ADD, EDIT }
 
 @Composable
-private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> Unit, onImport: () -> Unit, onPower: () -> Unit, onSwitch: (String) -> Unit, onApply: (String) -> Unit) {
+private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> Unit, onImport: () -> Unit, onPower: () -> Unit, onSwitch: (String) -> Unit, onApply: (String) -> Unit,
+                       notificationsOff: StateFlow<Boolean>, onNotificationSettings: () -> Unit) {
     val profiles by model.profiles.collectAsStateWithLifecycle()
     val selectedId by model.selected.collectAsStateWithLifecycle()
     val loading by model.loading.collectAsStateWithLifecycle()
@@ -170,6 +211,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
     val pendingSwitch by model.pendingSwitch.collectAsStateWithLifecycle()
     val pendingApply by model.pendingApply.collectAsStateWithLifecycle()
     val vpn by VpnLive.state.collectAsStateWithLifecycle()
+    val showNotificationsOff by notificationsOff.collectAsStateWithLifecycle()
     val theme by model.theme.collectAsStateWithLifecycle("system")
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val dark = theme == "dark" || (theme == "system" && systemDark)
@@ -187,7 +229,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
                     when (page) {
                         Page.CONNECTION -> MainPage(chosen, profiles, vpn, expanded, warning, onPower, onAdd = { addChoice = true }, onToggle = model::toggleExpanded, onSelect = model::requestSelect, onEdit = { editingId = it; page = Page.EDIT })
                         Page.JOURNAL -> LogJournalPage(logs)
-                        Page.SETTINGS -> SettingsPage(theme, onTheme = model::setTheme, onJournal = { page = Page.JOURNAL }, onAbout = { page = Page.ABOUT })
+                        Page.SETTINGS -> SettingsPage(theme, onTheme = model::setTheme, onJournal = { page = Page.JOURNAL }, onAbout = { page = Page.ABOUT }, notificationsOff = showNotificationsOff, onNotificationSettings = onNotificationSettings)
                         Page.ABOUT -> SimplePage(stringResource(R.string.about), { page = Page.SETTINGS }) { CoreAboutCard() }
                         Page.ADD -> AddPage(model, busy, error, onBack = { page = Page.CONNECTION }) { page = Page.CONNECTION }
                         // A profile deleted elsewhere keeps its open draft until the user leaves the editor.
@@ -516,9 +558,15 @@ private fun profileProtocol(profile: Profile): String = when (profile.protocol.u
 }
 @Composable private fun Metric(label: String, amount: Long, icon: androidx.compose.ui.graphics.vector.ImageVector) { Column(Modifier.semantics(mergeDescendants = true) {}) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)); Spacer(Modifier.width(6.dp)); Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f)) }; Spacer(Modifier.height(9.dp)); Text(bytes(amount), fontSize = 22.sp, fontWeight = FontWeight.Medium) } }
 
-@Composable internal fun SettingsPage(theme: String, onTheme: (String) -> Unit, onJournal: () -> Unit, onAbout: () -> Unit) {
+@Composable internal fun SettingsPage(theme: String, onTheme: (String) -> Unit, onJournal: () -> Unit, onAbout: () -> Unit,
+                                     notificationsOff: Boolean = false, onNotificationSettings: () -> Unit = {}) {
     PageFrame {
         PageHeader(stringResource(R.string.settings), subtitle = stringResource(R.string.settings_subtitle))
+        // Only while notifications are off; the section disappears once they are on (re-checked on resume).
+        if (notificationsOff) {
+            SectionTitle(stringResource(R.string.notifications_section_title)); CardBlock { NotificationsOffRow(onNotificationSettings) }
+            Spacer(Modifier.height(20.dp))
+        }
         SectionTitle(stringResource(R.string.appearance)); CardBlock { Column(Modifier.selectableGroup()) { listOf("system" to stringResource(R.string.system_theme), "light" to stringResource(R.string.light_theme), "dark" to stringResource(R.string.dark_theme)).forEach { (value, label) -> Row(Modifier.fillMaxWidth().selectable(selected = theme == value, role = Role.RadioButton) { onTheme(value) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = theme == value, onClick = null, modifier = Modifier.minimumInteractiveComponentSize()); Spacer(Modifier.width(8.dp)); Text(label) } } } }
         Spacer(Modifier.height(20.dp)); SectionTitle(stringResource(R.string.diag_settings_title)); LogSettingsCard()
         Spacer(Modifier.height(20.dp)); CardBlock { TextButton(onClick = onJournal) { Text(stringResource(R.string.connection_log)) }; HorizontalDivider(); TextButton(onClick = onAbout) { Text(stringResource(R.string.about)) } }
