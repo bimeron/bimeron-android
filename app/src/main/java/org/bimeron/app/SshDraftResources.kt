@@ -25,6 +25,9 @@ class SshDraftResources(val profileId: UUID) {
         return "/bimeron-import/${UUID.randomUUID()}".also { tokens[it] = token }
     }
 
+    /** The kind of this draft's import whose placeholder is [reference], or null when it is not one. */
+    @Synchronized fun importKind(reference: String): SshProfileResources.Kind? = if (disposed) null else tokens[reference]?.kind
+
     @Synchronized fun resolve(text: String, resources: SshProfileResources): String {
         check(!disposed)
         var document = ConfigDocument.parse(text)

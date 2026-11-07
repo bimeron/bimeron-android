@@ -4,6 +4,7 @@
     <string name="ssh_form_username">Username</string>
     <string name="ssh_form_identity_file">Private key path (IdentityFile)</string>
     <string name="ssh_form_known_hosts_file">Known hosts path (KnownHostsFile)</string>
+    <string name="ssh_form_file_not_imported">Not a file imported into this profile. Use the import button.</string>
     <string name="ssh_form_hint">Only files imported into this profile are used: fill the private key and known hosts paths with the import buttons. Typed paths to other files, for example on shared storage, and tilde or relative paths are refused when connecting. Without an imported known_hosts file, the server\'s key fingerprint is shown for you to confirm on the first connection.</string>
     <string name="ssh_trusted_host_keys_count">Trusted server keys: %1$d</string>
     <string name="ssh_trusted_host_keys_forget">Forget</string>

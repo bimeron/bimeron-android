@@ -4,6 +4,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SshProtocolFormTest {
+    @get:org.junit.Rule val temp = org.junit.rules.TemporaryFolder()
     private val original = "# fixture\n[AccessKey]\nType = ssh\nServer = host.example\nPort = 22\nUsername = user\nIdentityFile = /data/user/0/org.bimeron.app/files/id_ed25519\nKnownHostsFile = /data/user/0/org.bimeron.app/files/known_hosts\n; keep spacing\n"
     private fun doc() = ConfigDocument.parse(original)
     @Test fun facadeRecognizesExplicitSshAndPreservesInvalidAndRawDocuments() {
@@ -109,6 +110,41 @@ class SshProtocolFormTest {
         assertEquals("/data/user/0/app/files/known hosts", restored.value("AccessKey", "KnownHostsFile"))
         assertEquals("untouched", restored.value("Routing", "Future"))
         assertEquals(next.render(), restored.render())
+    }
+
+    /** Decision 8 at the field: only this draft's import placeholders and this profile's own generation files of the right kind. */
+    @Test fun typedFilePathsOutsideThisProfileShowAFieldError() {
+        val resources = SshProfileResources(java.io.File(temp.root.canonicalFile, "ssh-resources"))
+        val id = java.util.UUID.randomUUID()
+        val imports = SshDraftResources(id)
+        val generation = java.util.UUID.randomUUID()
+        val own = "/data/data/org.bimeron.app/files/ssh-resources/profiles/$id/$generation"
+        val identity = imports.accept(resources.stage(SshProfileResources.Kind.IDENTITY, "key".byteInputStream()))!!
+        val knownHosts = imports.accept(resources.stage(SshProfileResources.Kind.KNOWN_HOSTS, "hosts".byteInputStream()))!!
+        fun error(key: String, value: String) = SshProtocolForm.fieldError(doc().set("AccessKey", key, value), key, imports)
+        val message = R.string.ssh_form_file_not_imported
+        assertNull(error("IdentityFile", ""))
+        assertNull(error("IdentityFile", identity))
+        assertNull(error("KnownHostsFile", knownHosts))
+        assertNull(error("IdentityFile", "$own/identity"))
+        assertNull(error("KnownHostsFile", "$own/known_hosts"))
+        for (path in listOf("/sdcard/.ssh/id_rsa", "/storage/emulated/0/id_rsa", "/data/user/0/org.bimeron.app/files/id_ed25519",
+            "/data/data/org.bimeron.app/files/ssh-resources/profiles/${java.util.UUID.randomUUID()}/$generation/identity",
+            "/data/data/org.bimeron.app/files/ssh-resources/profiles/$id/${generation.toString().uppercase()}/identity",
+            "/data/data/org.bimeron.app/files/ssh-resources/profiles/$id/$generation/../$generation/identity",
+            "/data/data/org.bimeron.app/files/other/profiles/$id/$generation/identity",
+            "/bimeron-import/${java.util.UUID.randomUUID()}", "$own/known_hosts", knownHosts)) {
+            assertEquals(path, message, error("IdentityFile", path))
+        }
+        assertEquals(message, error("KnownHostsFile", "$own/identity"))
+        assertEquals(message, error("KnownHostsFile", identity))
+        // Other fields never get it, and other forms have no field errors.
+        assertNull(SshProtocolForm.fieldError(doc(), "Server", imports))
+        assertNull(SshProtocolForm.fieldError(doc(), "Username", imports))
+        assertNull(ShadowsocksForm.fieldError(doc(), "IdentityFile", imports))
+        // A disposed draft's placeholders are no longer its imports.
+        imports.dispose(resources)
+        assertEquals(message, error("IdentityFile", identity))
     }
 
     @Test fun uriStaysRawForFacadeAndIsNeverConverted() {
