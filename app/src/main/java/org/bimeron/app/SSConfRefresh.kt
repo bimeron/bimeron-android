@@ -22,9 +22,13 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -325,11 +329,33 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     } ?: return
     val state by model.ssconfRefresh.state.collectAsStateWithLifecycle()
     val id = draft.profile.id
-    val running = (state as? SSConfRefreshState.Running)?.profileId == id
-    val finished = (state as? SSConfRefreshState.Finished)?.takeIf { it.profileId == id }?.result
+    SSConfRefreshControls(
+        running = (state as? SSConfRefreshState.Running)?.profileId == id,
+        dirty = draft.dirty,
+        enabled = enabled,
+        finished = (state as? SSConfRefreshState.Finished)?.takeIf { it.profileId == id }?.result,
+        onRefresh = { model.refreshSnapshot(id) },
+    )
+}
+
+/**
+ * The refresh button and its supporting text. A dirty draft disables the button; the visible reason is
+ * attached to the button as its state description and hidden from accessibility on the text itself, so
+ * TalkBack announces it once, with the disabled button.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable internal fun SSConfRefreshControls(
+    running: Boolean,
+    dirty: Boolean,
+    enabled: Boolean,
+    finished: SSConfRefreshResult?,
+    onRefresh: () -> Unit,
+) {
+    // Dirty wins over a running refresh or a locked editor: it is the reason that remains afterwards.
+    val dirtyReason = if (dirty) stringResource(R.string.ssconf_refresh_save_first) else null
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        OutlinedButton(onClick = { model.refreshSnapshot(id) }, enabled = enabled && !draft.dirty && !running,
-            modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = onRefresh, enabled = enabled && !dirty && !running,
+            modifier = Modifier.fillMaxWidth().semantics { if (dirtyReason != null) stateDescription = dirtyReason }) {
             if (running) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
@@ -337,12 +363,13 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
             Text(stringResource(if (running) R.string.ssconf_refresh_in_progress else R.string.ssconf_refresh_action))
         }
         val (text, color) = when {
+            dirtyReason != null -> dirtyReason to MaterialTheme.colorScheme.onSurfaceVariant
             running -> stringResource(R.string.ssconf_refresh_hint) to MaterialTheme.colorScheme.onSurfaceVariant
-            draft.dirty -> stringResource(R.string.ssconf_refresh_save_first) to MaterialTheme.colorScheme.onSurfaceVariant
             finished != null -> stringResource(finished.messageRes) to
                 if (finished.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
             else -> stringResource(R.string.ssconf_refresh_hint) to MaterialTheme.colorScheme.onSurfaceVariant
         }
-        Text(text, fontSize = 12.sp, lineHeight = 18.sp, color = color)
+        Text(text, fontSize = 12.sp, lineHeight = 18.sp, color = color,
+            modifier = if (dirtyReason != null) Modifier.semantics { invisibleToUser() } else Modifier)
     }
 }
