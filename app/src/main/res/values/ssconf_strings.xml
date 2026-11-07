@@ -2,5 +2,5 @@
     <string name="ssconf_raw_only">Edit this source in the raw configuration.</string>
     <string name="ssconf_raw_config">Raw configuration</string>
     <string name="ssconf_local_only">Only the URL format is checked. Availability and connection are not checked here.</string>
-    <string name="ssconf_invalid">Invalid SSConf URL. Use ssconf:// with a host, without credentials or whitespace.</string>
+    <string name="ssconf_invalid">Invalid ssconf URL. Use ssconf:// with a host, without credentials or whitespace.</string>
 </resources>

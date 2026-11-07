@@ -42,7 +42,7 @@
     <string name="configure_profile">Настроить профиль %1$s</string>
     <string name="paste_key">Вставить ключ</string>
     <string name="import_conf">Импортировать .conf</string>
-    <string name="supported_keys">Поддерживаются Shadowsocks, SSConf, SOCKS5, HTTP(S), MASQUE, VLESS, VMess, Trojan, Naive, Hysteria2, AnyTLS, SSH и TUIC</string>
+    <string name="supported_keys">Поддерживаются Shadowsocks, ssconf, SOCKS5, HTTP(S), MASQUE, VLESS, VMess, Trojan, Naive, Hysteria2, AnyTLS, SSH и TUIC</string>
     <string name="profile_name">Название профиля</string>
     <string name="key_or_link">Ключ или ссылка</string>
     <string name="add">Добавить</string>

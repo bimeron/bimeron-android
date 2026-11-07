@@ -43,7 +43,7 @@
     <string name="configure_profile">Configure profile %1$s</string>
     <string name="paste_key">Paste key</string>
     <string name="import_conf">Import .conf</string>
-    <string name="supported_keys">Supports Shadowsocks, SSConf, SOCKS5, HTTP(S), MASQUE, VLESS, VMess, Trojan, Naive, Hysteria2, AnyTLS, SSH and TUIC</string>
+    <string name="supported_keys">Supports Shadowsocks, ssconf, SOCKS5, HTTP(S), MASQUE, VLESS, VMess, Trojan, Naive, Hysteria2, AnyTLS, SSH and TUIC</string>
     <string name="profile_name">Profile name</string>
     <string name="key_or_link">Key or link</string>
     <string name="add">Add</string>

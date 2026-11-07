@@ -1,8 +1,8 @@
 # Embedded Android core
 
 Source: https://github.com/bimeron/bimeron-core
-Revision: `61fa8a089a1b1b47df4b996d164b50cd93d0e423` (core PR #100, SSConf
-snapshot API, on top of the #97 auth and #98 SSConf bridge changes).
+Revision: `61fa8a089a1b1b47df4b996d164b50cd93d0e423` (core PR #100, ssconf
+snapshot API, on top of the #97 auth and #98 ssconf bridge changes).
 
 SHA-256 of `app/libs/bimeron-core.aar`:
 
@@ -85,8 +85,8 @@ Session(byte[], SSConfSnapshot, byte[], byte[], SocketProtector) constructor
 final class SSConfSnapshot implements go.Seq$Proxy, constructor (String, byte[])
 ```
 
-The SSConf snapshot entry points are packaged but not yet called by the
-application. The earlier auth and SSConf bindings remain present with unchanged
+The ssconf snapshot entry points are packaged but not yet called by the
+application. The earlier auth and ssconf bindings remain present with unchanged
 descriptors: `Session.pendingAuth/replyAuth/cancelAuth`, `SSConfSocketProtector`
 extending `SocketProtector` with `protect/bind`, `Androidcore.newSSConfRequest`,
 and `SSConfRequest.resolve/cancel` plus `SSConfResult.content/metadata`.
