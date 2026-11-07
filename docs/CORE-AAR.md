@@ -173,7 +173,7 @@ Session.acceptNewHostKeys(byte[]): void throws Exception
 
 `errorCatalog` returns Core's code catalog (#106); the app does not call it in
 production, and an instrumentation test checks that every SSH code in it is mapped.
-`acceptNewHostKeys` opts a session in to SSH accept-new host keys (core ADR 0035,
+`acceptNewHostKeys` opts a session in to SSH accept-new host keys (core ADR 0037,
 `docs/android-ssh-auth.md`). Independently of the opt-in, every androidcore session
 now uses only the SSH files its profile names (core ADR 0036): no default identity
 scan, no `~/.ssh/known_hosts` fallback, no `~` paths and no SSH agent; an SSH profile
