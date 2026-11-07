@@ -78,7 +78,7 @@
     <string name="switch_profile_title">Reconnect VPN?</string>
     <string name="switch_profile_message">Selecting profile “%1$s” requires interrupting the current connection.</string>
     <string name="switch_profile_action">Reconnect</string>
-    <string name="delete_active_warning">The active connection will be stopped.</string>
+    <string name="delete_active_warning">The VPN connection for this profile will be stopped.</string>
     <string name="selected">Selected</string>
     <string name="expand">Expand</string>
     <string name="collapse">Collapse</string>
