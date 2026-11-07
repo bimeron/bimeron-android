@@ -225,11 +225,11 @@ class ProfileMergeTest {
         val commented = base.replace("[Interface]", "# theirs comment\n[Interface]")
         val mine = edit(base) { set("Interface", "MTU", "1400") }.replace("[Routing]", "# my note\n[Routing]")
         val result = ProfileMerge.merge(base, mine, commented)
-        assertTrue(result.mineCommentsChanged)
+        assertTrue(result.commentsMayBeLost)
         val merged = result.resolve(emptyMap())
         assertTrue(merged.contains("# theirs comment"))
         assertFalse(merged.contains("# my note"))
-        assertFalse(ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, commented).mineCommentsChanged)
+        assertFalse(ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, commented).commentsMayBeLost)
     }
 
     @Test fun secretsAreMaskedInThePresentationModelUntilRevealed() {
@@ -302,5 +302,23 @@ class ProfileMergeTest {
         assertTrue(result.conflicts.isEmpty())
         assertEquals(0, result.autoMerged)
         assertEquals(same, result.resolve(emptyMap()))
+    }
+
+    @Test fun theirsCosmeticRuleCommentsReplacedByMineAreFlagged() {
+        val mine = edit(base) { editRule(1, "Action", "proxy") }
+        val theirs = base.replace("[Rule]\nDomain = example.org", "[Rule]\n# their note\nDomain = example.org")
+        val result = ProfileMerge.merge(base, mine, theirs)
+        assertTrue(result.conflicts.isEmpty())
+        assertFalse(result.resolve(emptyMap()).contains("# their note"))
+        assertTrue(result.commentsMayBeLost)
+        // Theirs' rule change kept, or no comment involved: nothing is flagged.
+        assertFalse(ProfileMerge.merge(base, edit(base) { set("Interface", "MTU", "1400") }, theirs).commentsMayBeLost)
+        assertFalse(ProfileMerge.merge(base, mine, base.replace("Domain = example.org", "Domain=example.org")).commentsMayBeLost)
+    }
+
+    @Test fun mergeLinesNeverPrintTheirValues() {
+        val line = MergeLine("Password", "do-not-print", secret = true)
+        assertFalse(line.toString().contains("do-not-print"))
+        assertFalse(MergeConflict(MergeField.Key("AccessKey", "Password"), listOf(line), null).toString().contains("do-not-print"))
     }
 }

@@ -33,6 +33,9 @@ class EditorConflictRebaseTest {
         val store = ProfileStore(null, profilesDir, resources) {}
         val runtime = MutableStateFlow(VpnState())
         var loadHook: suspend () -> Unit = {}
+        /** Runs inside the rebase/readLatest calls, after the store read (and merge) completed. */
+        var rebaseHook: suspend () -> Unit = {}
+        var readHook: suspend () -> Unit = {}
         var done = 0
         val commits = EditorCommits { store }
         val model = AppModelOperations(scope,
@@ -41,8 +44,8 @@ class EditorConflictRebaseTest {
             saveCommitted = { text, id, draft, publish -> commits.save(text, id, draft as? EditorDraft, publish) },
             deleteCommitted = { id, draft, publish -> commits.delete(id, draft as? EditorDraft, publish) },
             checkDelete = { id, draft -> commits.checkDelete(id, draft as? EditorDraft) },
-            rebase = { id, text, draft -> commits.rebase(id, text, draft) },
-            readLatest = { id -> store.readLatest(UUID.fromString(id)) },
+            rebase = { id, text, draft -> commits.rebase(id, text, draft).also { rebaseHook() } },
+            readLatest = { id -> store.readLatest(UUID.fromString(id)).also { readHook() } },
             saveAsNewCommitted = { text, draft, publish -> commits.saveAsNew(text, draft, publish) })
 
         suspend fun create(text: String): String {
@@ -88,9 +91,9 @@ class EditorConflictRebaseTest {
         // Nothing was saved and nothing moves until the user applies.
         assertEquals(opened, draft.baseRevision)
         assertEquals("1500", ConfigDocument.parse(stored(id).text).value("Interface", "MTU"))
-        assertFalse(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.NOT_APPLICABLE, draft.applyMerge(emptyMap()))
         val generation = draft.editGeneration
-        assertTrue(draft.applyMerge(mapOf(MergeField.Key("Interface", "MTU") to MergeChoice.MINE)))
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(mapOf(MergeField.Key("Interface", "MTU") to MergeChoice.MINE)))
         assertNull(draft.conflict)
         assertEquals(conflict.latest.revision, draft.baseRevision)
         assertTrue(draft.editGeneration > generation)
@@ -113,7 +116,7 @@ class EditorConflictRebaseTest {
         draft.set("Interface", "MTU", "1400")
         save(draft).join()
         assertTrue(changed(draft).merge.conflicts.isEmpty())
-        assertTrue(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(emptyMap()))
         changeElsewhere(id) { set("Interface", "MTU", "1300").set("Profile", "Name", "Theirs again") }
         save(draft).join()
         assertEquals(0, done)
@@ -121,7 +124,7 @@ class EditorConflictRebaseTest {
         // The base is now the first rebased text, so only MTU conflicts; DNS is not a change any more.
         assertEquals(listOf(MergeField.Key("Interface", "MTU")), second.merge.conflicts.map { it.field })
         assertEquals(1, second.merge.theirsChanges)
-        assertTrue(draft.applyMerge(mapOf(MergeField.Key("Interface", "MTU") to MergeChoice.THEIRS)))
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(mapOf(MergeField.Key("Interface", "MTU") to MergeChoice.THEIRS)))
         save(draft).join()
         assertEquals(1, done)
         val saved = ConfigDocument.parse(stored(id).text)
@@ -138,7 +141,7 @@ class EditorConflictRebaseTest {
         save(draft).join()
         val base = draft.baseRevision
         draft.set("Interface", "MTU", "1350")
-        assertFalse(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.NOT_APPLICABLE, draft.applyMerge(emptyMap()))
         assertEquals(base, draft.baseRevision)
         assertEquals("1350", draft.document.value("Interface", "MTU"))
     }
@@ -178,7 +181,7 @@ class EditorConflictRebaseTest {
         save(draft).join()
         assertEquals(deletedMessage, model.error.value)
         assertEquals(EditorConflict.Gone(deleted = true), draft.conflict)
-        assertFalse(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.NOT_APPLICABLE, draft.applyMerge(emptyMap()))
         // Reloading cannot bring it back either; the panel stays on save-as-new.
         model.reloadLatest().join()
         assertEquals(EditorConflict.Gone(deleted = true), draft.conflict)
@@ -278,12 +281,12 @@ class EditorConflictRebaseTest {
         val published = checkNotNull(key.prepared).path
         changeElsewhere(id) { set("Interface", "DNS", "9.9.9.9") }
         assertTrue(File(published).exists())
-        assertTrue(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(emptyMap()))
         assertEquals(placeholder, draft.document.value("AccessKey", "IdentityFile"))
         // Theirs changed again after the rebase: the next save rebases again and keeps the import.
         save(draft).join()
         assertEquals(0, done)
-        assertTrue(draft.applyMerge(emptyMap()))
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(emptyMap()))
         assertEquals(placeholder, draft.document.value("AccessKey", "IdentityFile"))
         save(draft).join()
         assertEquals(1, done)
@@ -330,5 +333,130 @@ class EditorConflictRebaseTest {
         assertEquals(0, done)
         assertEquals("Mine", draft.document.value("Profile", "Name"))
         assertEquals(1, store.load().first.size)
+    }
+
+    @Test fun saveAsNewAfterDeleteKeepsTheSavedSshKeyOfTheBase() = scenario {
+        val id = create(ssh)
+        val first = open(id)
+        assertTrue(first.importKey(SshProfileResources.Kind.IDENTITY, resources.stage(SshProfileResources.Kind.IDENTITY, "saved-key".byteInputStream())))
+        save(first).join()
+        assertEquals(1, done)
+        model.editorDraft = null; first.resources.dispose(resources)
+        val draft = open(id)
+        val savedKey = draft.document.value("AccessKey", "IdentityFile")
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(id), stored(id).revision) is CommitResult.Committed)
+        assertTrue("the open draft pins its base's saved key", File(savedKey).exists())
+        draft.set("Profile", "Name", "Rescued")
+        save(draft).join()
+        assertEquals(EditorConflict.Gone(deleted = true), draft.conflict)
+        model.saveAsNew("saved as new") { done++ }.join()
+        assertEquals("save-as-new error: ${model.error.value}", 2, done)
+        val created = store.load().first.single()
+        assertEquals("saved-key", File(ConfigDocument.parse(created.text).value("AccessKey", "IdentityFile")).readText())
+        // Releasing the pin removes the deleted profile's key and its now empty directory.
+        model.editorDraft = null; draft.resources.dispose(resources)
+        assertFalse(File(savedKey).exists())
+        assertFalse(File(resourcesRoot, "profiles/$id").exists())
+    }
+
+    @Test fun saveAsNewKeepsMineKeyWhenTheirsReplacedIt() = scenario {
+        val id = create(ssh)
+        val first = open(id)
+        assertTrue(first.importKey(SshProfileResources.Kind.IDENTITY, resources.stage(SshProfileResources.Kind.IDENTITY, "old-key".byteInputStream())))
+        save(first).join()
+        model.editorDraft = null; first.resources.dispose(resources)
+        val draft = open(id)
+        val oldKey = draft.document.value("AccessKey", "IdentityFile")
+        // Another editor replaces the key; its save prunes generations it no longer references.
+        val other = EditorDraft(stored(id).profile, stored(id).revision)
+        assertTrue(other.importKey(SshProfileResources.Kind.IDENTITY, resources.stage(SshProfileResources.Kind.IDENTITY, "new-key".byteInputStream())))
+        val theirs = other.resources.resolve(other.source.text, resources)
+        assertTrue(store.compareAndSave(UUID.randomUUID(), UUID.fromString(id), stored(id).revision, other.source.text, other.resources) is CommitResult.Committed)
+        other.resources.dispose(resources)
+        assertTrue("pinned by the open draft", File(oldKey).exists())
+        draft.set("Profile", "Name", "Mine")
+        save(draft).join()
+        assertNotNull(draft.conflict as? EditorConflict.Changed)
+        model.saveAsNew("saved as new") { done++ }.join()
+        assertEquals("save-as-new error: ${model.error.value}", 2, done)
+        val created = store.load().first.single { it.id != id }
+        assertEquals("old-key", File(ConfigDocument.parse(created.text).value("AccessKey", "IdentityFile")).readText())
+        assertEquals(ConfigDocument.parse(theirs).value("AccessKey", "IdentityFile"), ConfigDocument.parse(stored(id).text).value("AccessKey", "IdentityFile"))
+        model.editorDraft = null; draft.resources.dispose(resources)
+        assertFalse("the replaced key goes once no draft pins it", File(oldKey).exists())
+        assertEquals("new-key", File(ConfigDocument.parse(stored(id).text).value("AccessKey", "IdentityFile")).readText())
+    }
+
+    @Test fun invalidMergeIsNotApplied() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        // Theirs changes the SS key; mine switches to SOCKS5. Keeping theirs' SS would leave two key sources.
+        changeElsewhere(id) { set("AccessKey", "SS", "ss://YWVzLTEyOC1nY206b3RoZXI@example.com:443") }
+        draft.edit(draft.document.remove("AccessKey", "SS").set("AccessKey", "SOCKS5", "socks5://192.0.2.1:1080"))
+        save(draft).join()
+        val field = MergeField.Key("AccessKey", "SS")
+        assertEquals(listOf(field), changed(draft).merge.conflicts.map { it.field })
+        val base = draft.baseRevision
+        val text = draft.source.text
+        assertEquals(EditorDraft.MergeOutcome.INVALID, draft.applyMerge(mapOf(field to MergeChoice.THEIRS)))
+        assertEquals(base, draft.baseRevision)
+        assertEquals(text, draft.source.text)
+        assertNotNull(draft.conflict)
+        assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(mapOf(field to MergeChoice.MINE)))
+        save(draft).join()
+        assertEquals(1, done)
+        assertEquals("socks5://192.0.2.1:1080", ConfigDocument.parse(stored(id).text).value("AccessKey", "SOCKS5"))
+    }
+
+    @Test fun rebaseResultForAnEditedOrReplacedDraftIsDropped() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Profile", "Name", "Theirs") }
+        draft.set("Profile", "Name", "Mine")
+        // Edited while the merge is being returned.
+        var gate = Gate(); rebaseHook = { gate.await() }
+        var saving = save(draft)
+        gate.entered.await()
+        draft.set("Profile", "Name", "Mine, edited")
+        model.error.value = "newer"
+        gate.release.complete(Unit); saving.join()
+        assertNull(draft.conflict)
+        assertEquals("newer", model.error.value)
+        // Replaced while the merge is being returned.
+        gate = Gate(); rebaseHook = { gate.await() }
+        saving = save(draft)
+        gate.entered.await()
+        val replacement = open(id)
+        gate.release.complete(Unit); saving.join()
+        assertNull(draft.conflict)
+        assertNull(replacement.conflict)
+        draft.resources.dispose(resources)
+        replacement.resources.dispose(resources)
+    }
+
+    @Test fun reloadResultForAnEditedOrReplacedDraftIsDropped() = scenario {
+        val id = create(ss("A"))
+        val draft = open(id)
+        changeElsewhere(id) { set("Profile", "Name", "Theirs") }
+        draft.set("Profile", "Name", "Mine")
+        save(draft).join()
+        val base = draft.baseRevision
+        var gate = Gate(); readHook = { gate.await() }
+        var reload = model.reloadLatest()
+        gate.entered.await()
+        draft.set("Profile", "Name", "Mine, edited")
+        gate.release.complete(Unit); reload.join()
+        assertEquals("Mine, edited", draft.document.value("Profile", "Name"))
+        assertEquals(base, draft.baseRevision)
+        gate = Gate(); readHook = { gate.await() }
+        reload = model.reloadLatest()
+        gate.entered.await()
+        val replacement = open(id)
+        gate.release.complete(Unit); reload.join()
+        assertEquals("Mine, edited", draft.document.value("Profile", "Name"))
+        assertEquals(base, draft.baseRevision)
+        assertSame(replacement, model.editorDraft)
+        draft.resources.dispose(resources)
+        replacement.resources.dispose(resources)
     }
 }

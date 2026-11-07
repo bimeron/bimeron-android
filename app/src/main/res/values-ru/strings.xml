@@ -115,7 +115,6 @@
     <string name="profile_conflict_message">Правки не сохранены. Изменения, сделанные только с одной стороны, объединены автоматически. Выберите версию для каждого параметра ниже, примените и сохраните ещё раз.</string>
     <string name="profile_conflict_auto_merged">Объединено автоматически: %1$d</string>
     <string name="profile_conflict_none">Конфликтующих параметров нет. Примените, чтобы продолжить с объединённой версией.</string>
-    <string name="profile_conflict_comments">Изменения комментариев в вашей версии не сохраняются, кроме правил, взятых из вашей версии.</string>
     <string name="profile_conflict_progress">Выбрано: %1$d из %2$d</string>
     <string name="profile_conflict_mine">Ваша версия</string>
     <string name="profile_conflict_theirs">Сохранённая версия</string>
@@ -141,4 +140,7 @@
     <string name="profile_conflict_unreadable_title">Сохранённый профиль не читается</string>
     <string name="profile_conflict_unreadable_message">Сохранённую версию этого профиля больше нельзя прочитать. Сохраните правки как новый профиль, чтобы не потерять их.</string>
     <string name="profile_saved_as_new">Сохранено как новый профиль</string>
+    <string name="profile_conflict_not_chosen">Не выбрано</string>
+    <string name="profile_conflict_invalid">Объединённый профиль недействителен. Выберите другие версии или загрузите последнюю.</string>
+    <string name="profile_conflict_comments">Некоторые правки комментариев не сохранились в объединённой версии. Проверьте исходный конфиг после применения.</string>
 </resources>

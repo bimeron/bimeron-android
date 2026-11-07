@@ -19,6 +19,8 @@ enum class MergeChoice { MINE, THEIRS }
  * must be shown through [display], which masks them unless the user revealed that conflict.
  */
 data class MergeLine(val key: String?, val value: String, val secret: Boolean, val disabled: Boolean = false) {
+    /** Never prints the value, which may be a secret. */
+    override fun toString() = "MergeLine(key=$key, secret=$secret, disabled=$disabled)"
     /** True for an SSH file imported in this draft and not yet saved (`/bimeron-import/<uuid>`). */
     val imported get() = value.startsWith(ProfileMerge.IMPORT_PREFIX)
     fun display(revealed: Boolean): String = if (secret && !revealed) ProfileMerge.MASK else value
@@ -45,7 +47,8 @@ data class MergeConflict(val field: MergeField, val mine: List<MergeLine>?, val 
  * - If any side does not parse, the result is a single [MergeField.WholeText] conflict (mine vs theirs),
  *   unless mine and theirs are identical.
  * - The merged text is built on theirs, so its comments and layout are kept. Mine's comment edits
- *   outside rules taken from mine are not carried; [mineCommentsChanged] flags that risk.
+ *   outside rules taken from mine are not carried, and theirs' rule comments are lost when mine's rules
+ *   replace a cosmetic-only rule change of theirs; [commentsMayBeLost] flags both.
  */
 object ProfileMerge {
     const val MASK = "••••••••"
@@ -71,8 +74,11 @@ object ProfileMerge {
         val mineChanges: Int,
         /** Fields changed only in theirs; kept automatically. */
         val theirsChanges: Int,
-        /** Mine edited comments; those outside rule blocks taken from mine are not carried over. */
-        val mineCommentsChanged: Boolean,
+        /**
+         * Some comment edits may be missing from the merged text: mine edited comments (only those inside
+         * rule blocks taken from mine are carried), or mine's rules replaced theirs' cosmetic rule edits.
+         */
+        val commentsMayBeLost: Boolean,
         private val theirs: String,
         private val mine: String,
         private val parsed: Boolean,
@@ -143,20 +149,24 @@ object ProfileMerge {
         }
 
         val rb = rawRules(b); val rm = rawRules(m); val rt = rawRules(t)
+        var rulesDropTheirComments = false
         when {
             rm == rt -> Unit
             rm == rb -> theirsChanges++
             rt == rb -> { plan += { it.withRules(m.rules) }; mineChanges++ }
             // Both changed the blocks: decide on meaning, so a reformat on one side does not conflict.
             semanticRules(m) == semanticRules(t) -> Unit
-            semanticRules(t) == semanticRules(b) -> { plan += { it.withRules(m.rules) }; mineChanges++ }
+            semanticRules(t) == semanticRules(b) -> {
+                plan += { it.withRules(m.rules) }; mineChanges++
+                rulesDropTheirComments = ruleComments(t) != ruleComments(m)
+            }
             semanticRules(m) == semanticRules(b) -> theirsChanges++
             else -> {
                 conflicts += MergeConflict(MergeField.Rules, ruleLines(m), ruleLines(t))
                 resolutions[MergeField.Rules] = { it.withRules(m.rules) }
             }
         }
-        val commentsChanged = b.comments().sorted() != m.comments().sorted()
+        val commentsChanged = b.comments().sorted() != m.comments().sorted() || rulesDropTheirComments
         return Result(conflicts, mineChanges, theirsChanges, commentsChanged, theirs, mine, true, plan, resolutions)
     }
 
@@ -179,7 +189,11 @@ object ProfileMerge {
     private fun sectionLines(section: String, values: Map<String, String>) =
         values.map { (key, value) -> MergeLine(key, value, isSecret(section, key)) }
 
-    private data class RawRule(val disabled: Boolean, val lines: List<String>)
+    private data class RawRule(val disabled: Boolean, val lines: List<String>) {
+        override fun toString() = "RawRule(disabled=$disabled, lines=${lines.size})"
+    }
+    private fun ruleComments(document: ConfigDocument) =
+        document.rules.flatMap { rule -> rule.lines.map { it.trim() }.filter { it.startsWith('#') || it.startsWith(';') } }.sorted()
     private fun rawRules(document: ConfigDocument) = document.rules.map { rule ->
         RawRule(rule.disabled, rule.lines.map { it.trimEnd() }.dropLastWhile { it.isEmpty() })
     }

@@ -117,18 +117,25 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     }
     fun configurationChanged() = document.effective() != ConfigDocument.parse(profile.text).effective()
 
+    enum class MergeOutcome { APPLIED, NOT_APPLICABLE, INVALID }
+
     /**
      * Applies the user's choices to a [EditorConflict.Changed] conflict: the draft text becomes the merged
      * text and its base becomes the latest stored profile and revision, so the next save compares against
-     * it. Nothing is saved. Returns false, changing nothing, while a conflict is unresolved or if the
-     * draft text changed since the merge was computed.
+     * it. Nothing is saved. [MergeOutcome.NOT_APPLICABLE], changing nothing, while a conflict is unresolved
+     * or if the draft text changed since the merge was computed. [MergeOutcome.INVALID], changing nothing,
+     * if the merged text fails the local validation a save runs first (unless it is the draft's own text).
      */
-    fun applyMerge(choices: Map<MergeField, MergeChoice>): Boolean {
-        val pending = conflict as? EditorConflict.Changed ?: return false
-        if (!pending.merge.resolved(choices) || source.text != pending.mine || pending.latest.id != profile.id) return false
-        update(TextFieldValue(pending.merge.resolve(choices)))
+    fun applyMerge(choices: Map<MergeField, MergeChoice>): MergeOutcome {
+        val pending = conflict as? EditorConflict.Changed ?: return MergeOutcome.NOT_APPLICABLE
+        if (!pending.merge.resolved(choices) || source.text != pending.mine || pending.latest.id != profile.id) return MergeOutcome.NOT_APPLICABLE
+        val merged = pending.merge.resolve(choices)
+        if (merged != pending.mine) {
+            try { ConfigDocument.parse(merged).validate() } catch (_: ProfileError) { return MergeOutcome.INVALID }
+        }
+        update(TextFieldValue(merged))
         rebase(pending.latest)
-        return true
+        return MergeOutcome.APPLIED
     }
 
     /** Discards the draft's edits and continues from [latest], the profile as stored now, at its revision. */
@@ -144,6 +151,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     private fun rebase(latest: StoredProfile) {
         history.clear()
         pendingEdits = false
+        resources.pinBase(latest.text)
         profile = latest.profile
         baseRevision = latest.revision
         conflict = null
@@ -208,7 +216,8 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                 FilterChip(selected = draft.tab == index, onClick = { draft.tab = index }, label = { Text(title, fontSize = 12.sp) }, colors = FilterChipDefaults.filterChipColors(selectedLabelColor = MaterialTheme.colorScheme.primary), enabled = !locked && !draft.pendingProtocolEdits && (!draft.rawInvalid || index == 3))
             }
         }
-        val message = draft.error ?: draft.parseError?.text(context) ?: saveError
+        // While the conflict panel is open it explains the conflict itself.
+        val message = (draft.error ?: draft.parseError?.text(context) ?: saveError)?.takeUnless { draft.conflict != null && it in conflictMessages }
         if (message != null) Text(if (!protected || message in conflictMessages || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
         if (locked) LinearProgressIndicator(Modifier.fillMaxWidth())
         // A rebase or reload replaces the draft's base: form-local state (reveals, pending form edits) starts over.

@@ -116,7 +116,6 @@
     <string name="profile_conflict_message">Your edits were not saved. Changes made on only one side are merged automatically. Choose a version for each setting below, apply, then save again.</string>
     <string name="profile_conflict_auto_merged">Merged automatically: %1$d</string>
     <string name="profile_conflict_none">No settings conflict. Apply to continue with the merged version.</string>
-    <string name="profile_conflict_comments">Comment changes in your version are not kept, except in rules taken from your version.</string>
     <string name="profile_conflict_progress">Chosen: %1$d of %2$d</string>
     <string name="profile_conflict_mine">Your version</string>
     <string name="profile_conflict_theirs">Saved version</string>
@@ -142,4 +141,7 @@
     <string name="profile_conflict_unreadable_title">Saved profile cannot be read</string>
     <string name="profile_conflict_unreadable_message">The saved version of this profile can no longer be read. Save your edits as a new profile to keep them.</string>
     <string name="profile_saved_as_new">Saved as a new profile</string>
+    <string name="profile_conflict_not_chosen">Not chosen</string>
+    <string name="profile_conflict_invalid">The merged profile is not valid. Choose other versions or reload the latest.</string>
+    <string name="profile_conflict_comments">Some comment edits are not kept in the merged version. Check the raw config after applying.</string>
 </resources>

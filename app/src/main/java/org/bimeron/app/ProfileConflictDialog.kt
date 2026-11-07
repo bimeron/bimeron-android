@@ -16,6 +16,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,6 +52,8 @@ import androidx.compose.ui.window.DialogProperties
             val merge = conflict.merge
             val choices = remember(conflict) { mutableStateMapOf<MergeField, MergeChoice>() }
             val revealed = remember(conflict) { mutableStateMapOf<MergeField, Boolean>() }
+            // Set when the chosen merge fails the local validation; cleared by any new choice.
+            var invalid by remember(conflict) { mutableStateOf(false) }
             AlertDialog(
                 onDismissRequest = { if (!locked) draft.conflict = null }, properties = properties,
                 title = { Text(stringResource(R.string.profile_conflict_title)) },
@@ -58,16 +61,17 @@ import androidx.compose.ui.window.DialogProperties
                     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(stringResource(R.string.profile_conflict_message))
                         Text(stringResource(R.string.profile_conflict_auto_merged, merge.autoMerged), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (merge.mineCommentsChanged) Text(stringResource(R.string.profile_conflict_comments), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (merge.commentsMayBeLost) Text(stringResource(R.string.profile_conflict_comments), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (merge.conflicts.isEmpty()) Text(stringResource(R.string.profile_conflict_none))
                         merge.conflicts.forEach { item ->
                             key(item.field) {
                                 ConflictCard(item, choices[item.field], revealed[item.field] == true, !locked,
-                                    onChoose = { choices[item.field] = it }, onReveal = { revealed[item.field] = revealed[item.field] != true })
+                                    onChoose = { choices[item.field] = it; invalid = false }, onReveal = { revealed[item.field] = revealed[item.field] != true })
                             }
                         }
                         if (merge.conflicts.isNotEmpty()) Text(stringResource(R.string.profile_conflict_progress, merge.conflicts.count { it.field in choices }, merge.conflicts.size),
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (invalid) Text(stringResource(R.string.profile_conflict_invalid), color = MaterialTheme.colorScheme.error)
                         failureText()
                         HorizontalDivider()
                         TextButton(onClick = { confirmReload = true }, enabled = !locked) { Text(stringResource(R.string.profile_conflict_reload)) }
@@ -75,7 +79,13 @@ import androidx.compose.ui.window.DialogProperties
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { if (draft.applyMerge(choices.toMap())) model.clearError() },
+                    TextButton(onClick = {
+                        when (draft.applyMerge(choices.toMap())) {
+                            EditorDraft.MergeOutcome.APPLIED -> model.clearError()
+                            EditorDraft.MergeOutcome.INVALID -> invalid = true
+                            EditorDraft.MergeOutcome.NOT_APPLICABLE -> Unit
+                        }
+                    },
                         enabled = !locked && merge.resolved(choices)) { Text(stringResource(R.string.profile_conflict_apply)) }
                 },
                 dismissButton = { TextButton(onClick = { draft.conflict = null }, enabled = !locked) { Text(stringResource(R.string.cancel)) } })
@@ -102,7 +112,9 @@ import androidx.compose.ui.window.DialogProperties
     // Unresolved conflicts stay highlighted until a side is chosen.
     val colors = if (choice == null) MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
         else MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(shape = RoundedCornerShape(16.dp), color = colors.first, contentColor = colors.second, modifier = Modifier.fillMaxWidth()) {
+    val notChosen = stringResource(R.string.profile_conflict_not_chosen)
+    Surface(shape = RoundedCornerShape(16.dp), color = colors.first, contentColor = colors.second,
+        modifier = Modifier.fillMaxWidth().semantics { if (choice == null) stateDescription = notChosen }) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f).semantics { heading() })
