@@ -1,4 +1,4 @@
-# SSConf network scope
+# ssconf network scope
 
 `SSConfFetch.kt` (`fetchSSConf(context, source)`) is the only production consumer
 of `withSSConfNetwork` and `SSConfNetworkLease`; no other app code may use them.
@@ -13,12 +13,16 @@ registration is closed on every path. Source, body and lease diagnostics never e
 exception messages, `VpnState` or the journal. An internal overload takes the lease
 scope and request factory as seams (JVM tests: `SSConfFetchMappingTest`).
 
-The VPN service uses it only when an SSConf profile has no usable persisted snapshot.
-A persisted snapshot that Core accepts is reused without network access and is never
-refetched automatically (not on connect, reconnect, network change or recovery). A
-persisted snapshot that Core rejects is discarded and replaced by one fetch. A fetched
-body is validated by Core before `ProfileStore.commitSnapshot`; a rejected body fails
-with `SSCONF_SNAPSHOT_INVALID` and is not committed. A commit conflict fails the attempt
+The VPN service uses it on every user-initiated connect of an ssconf profile (Outline
+dynamic access key model, see [CONTRACT.md](CONTRACT.md)): one bounded fetch, Core
+validation, then `ProfileStore.commitSnapshot`, and the session uses the fresh snapshot.
+If the fetch fails (`SSCONF_FETCH_FAILED`, `SSCONF_NETWORK_UNAVAILABLE`) or Core rejects
+the fetched body (`SSCONF_SNAPSHOT_INVALID`, never committed), the persisted snapshot is
+used if Core accepts it, with a fixed journal warning that carries only the code; a
+persisted snapshot that Core rejects is discarded, and without a usable one the attempt
+fails with the fetch's code. Recovery starts and Core-internal reconnects never fetch:
+they use the persisted snapshot, and a recovery start without one fails with
+`RECOVERY_NEEDS_USER`. There is no manual refresh. A commit conflict fails the attempt
 with `PROFILE_CHANGED`; an I/O failure to persist continues with the validated in-memory
 snapshot and records `SNAPSHOT_NOT_PERSISTED` in the journal at WARNING. All of this
 happens before the native cleanup gate, capability check and TUN; the session is then
@@ -31,9 +35,18 @@ failed native load) fails the attempt with `CORE_INCOMPATIBLE`, like `CoreCapabi
 A `LinkageError` from the store (discard or commit) propagates. A commit conflict seen
 by an attempt that is already stale is cancellation, not `PROFILE_CHANGED`.
 Instrumentation: `SSConfFetchTest` (real fetch failure paths, observer count back at 0,
-state and token unchanged) and `SnapshotStartTest` (the service's snapshot step with a
-real store and native validation; no fetch for a valid snapshot, exactly one for a
-corrupt or Core-rejected one).
+state and token unchanged), `SnapshotStartTest` (the service's snapshot step with a
+real store and native validation; a recovery start never fetches, a user connect
+fetches once and replaces the snapshot) and `SSConfConnectFetchTest` (bind-only proof:
+a user connect fetches once from a local endpoint inside the test through a socket the
+lease protects and binds to the physical, non-VPN network, while no VPN exists, and
+commits it; the lease is released before native work, session creation and the point
+where the TUN would be established; a recovery start acquires no lease; a failed real
+fetch falls back to a stored snapshot or fails with its code; a rejected body is
+`SSCONF_SNAPSHOT_INVALID`). Core's own request accepts only HTTPS with a system-trusted
+certificate, so that test swaps only the native request (`fetchSSConf`'s `newRequest`
+seam) and keeps the production lease scope. It runs up to unstarted session creation;
+no TUN is established and no Session is started.
 
 `withSSConfNetwork(context, block)` requires existing VPN consent and binds the
 private same-UID service without starting a VPN session. Acquisition waits at

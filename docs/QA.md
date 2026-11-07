@@ -148,7 +148,7 @@ documentation addresses (`192.0.2.0/24`, `example.invalid`):
   unchanged.
 
 These tests construct and stop a Session without `Start`, `SetNetwork` or DNS
-resolution. SSConf is excluded because it requires remote resolution. Parser
+resolution. ssconf is excluded because it requires remote resolution. Parser
 acceptance does not prove transport availability, certificate validation,
 authentication, routing, UDP, reconnect or a successful connection.
 
@@ -237,6 +237,28 @@ and binding of all physical sockets; absence of a VPN loop; stop and restart.
 Verify `ssconf` and direct routing separately. Then verify IPv6, physical network
 and DNS changes, process crashes, always-on/lockdown and long-running use with
 memory monitoring. Compare state and counters from `Status()` with actual traffic.
+
+## ssconf connect-time fetch (device QA)
+
+On a real phone (Wi-Fi ADB) with a real ssconf endpoint:
+
+1. Connect an ssconf profile with the server online: the connect fetches the
+   config once (server access log), the VPN connects, and no fallback entry
+   appears in the journal.
+2. Change the config on the server, disconnect and connect again: the new config
+   is used (a fresh fetch on every user connect).
+3. Take the ssconf server offline (or block it) and connect: the VPN connects with
+   the saved configuration and the journal shows "ssconf update failed
+   (SSCONF_FETCH_FAILED); connecting with the saved configuration" (or
+   `SSCONF_NETWORK_UNAVAILABLE`). The journal and logcat contain no link or body.
+4. With the server offline and no saved configuration (a new profile), connect:
+   it fails with "Could not fetch ssconf." (or "No network is available for
+   ssconf.").
+5. Recovery: with the VPN connected, kill the process (`am kill` after moving the
+   app to the background, or let the system restart the sticky service): the
+   restarted session uses the saved configuration with no request in the server
+   log. Network switches during a session (Core-internal reconnects) make no
+   request either.
 
 ## Manual TalkBack checklist
 
