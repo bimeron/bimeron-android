@@ -21,8 +21,8 @@ the fetched body (`SSCONF_SNAPSHOT_INVALID`, never committed), the persisted sna
 used if Core accepts it, with a fixed journal warning that carries only the code; a
 persisted snapshot that Core rejects is discarded, and without a usable one the attempt
 fails with the fetch's code. Recovery starts and Core-internal reconnects never fetch:
-they use the persisted snapshot, and a recovery start without one fails with
-`RECOVERY_NEEDS_USER`. There is no manual refresh. A commit conflict fails the attempt
+they use the persisted snapshot, and a recovery start without a usable one ends like a
+skipped recovery (`RECOVERY_NEEDS_USER`, "Tap to reconnect" notification, journal entry). There is no manual refresh. A commit conflict fails the attempt
 with `PROFILE_CHANGED`; an I/O failure to persist continues with the validated in-memory
 snapshot and records `SNAPSHOT_NOT_PERSISTED` in the journal at WARNING. All of this
 happens before the native cleanup gate, capability check and TUN; the session is then

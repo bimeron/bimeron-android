@@ -32,7 +32,9 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
   leading BOM or Unicode space, an unknown protocol, or an unreadable profile) is
   skipped instead: no session starts, the recovery ID is cleared, a "Tap to
   reconnect" notification opens the app, and the state shows
-  `RECOVERY_NEEDS_USER`. Non-SSH profiles recover as before.
+  `RECOVERY_NEEDS_USER`. An ssconf profile without a usable saved configuration is
+  skipped the same way, because a recovery never fetches. Non-SSH profiles recover
+  as before.
   `RecoverySkipTest` (instrumentation) covers the SSH skip.
 - On Android 13 (API 33) and later the recovery notification is shown only if the
   user granted the notification permission; without it the post is dropped
