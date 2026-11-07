@@ -109,7 +109,14 @@ there are no assume/skip branches.
   only in-memory started/job fields, releases an actual resolver lease, checks
   the simulated job and global state survive, restores fields before destruction.
 - bindingAcquisitionCancellationUnbindsBeforeCapture: prepared fixture; real bind,
-  delayed connection delivery, cancellation, unbind and framework destruction.
+  delayed connection delivery, cancellation, unbind and framework destruction. The
+  framework connection is forced to arrive before bindService returns on the worker,
+  so the test waits for that return before reading the tracked binding, and asserts
+  that capture never ran.
+- cancellationAfterConnectionBeforeBindReturnsNeverCaptures: prepared fixture; the
+  lease's connection completes while its worker is held inside bindService, the
+  worker is cancelled and released, and the lease never captures, unbinds once and
+  leaves the observer count and service destruction as before.
 - failedBindingAttemptsStillUnbind: prepared fixture; false and SecurityException
   binding attempts each perform guarded unbind and expose the fixed safe error.
 - acquisitionCancellationClosesObserverAndBinding: prepared fixture; pauses after
