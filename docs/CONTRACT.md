@@ -32,6 +32,79 @@ The fetch model follows Outline dynamic access keys: a user-initiated connect fe
 - Source and body never appear in logs, the journal, exception messages or `VpnState`.
 - Decision logic: `resolveSessionSnapshot` (JVM: `SSConfSessionSnapshotTest`); bind-only proof on the emulator: `SSConfConnectFetchTest`. See [SSCONF-NETWORK.md](SSCONF-NETWORK.md).
 
+## SSH host keys
+
+Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-key offers".
+
+- Every SSH-capable profile opts in: `BimeronVpnService.runSession` reads the profile's stored lines on IO,
+  after the single session-input read and before any native session, with the attempt token checked on both
+  sides, and calls `Session.acceptNewHostKeys(bytes)` once, before `start`. SSH-capable is the recovery
+  classification `mayNeedInteractiveAuth` (SSH, `Type = ssh`, any `ssh://` value, unknown or unparsable);
+  positively non-SSH profiles do not opt in. The call is made even with no stored keys, so an unknown host is
+  offered. An imported `KnownHostsFile` stays trusted alongside; Core trusts the union.
+- SSH files (decision 8). What is enforced, and where:
+  - **Service (every start, before any native session):** `requireSshFilesInsideApp` (`SshFileGuard.kt`)
+    collects every SSH file reference Core would open: `[AccessKey]` `IdentityFile`/`KnownHostsFile` and the
+    `identity`/`known_hosts` query parameters of any `ssh://` value (keys case-insensitive, every value,
+    percent-decoded). Each must be the right kind of file under this profile's imports,
+    `<filesRoot>/ssh-resources/profiles/<profile uuid>/<generation uuid>/{identity|known_hosts}`, with
+    `filesRoot` resolved as `ProfileStore` resolves it. Anything else (`/sdcard/...`, `/storage/...`, `~`,
+    relative paths, another profile's or the wrong kind of file, a malformed query) fails the attempt with
+    `SSH_FILE_OUTSIDE_APP`; nothing is dialed.
+  - **Core (every Android session, core ADR 0036):** no default identity scan, no `~/.ssh/known_hosts`
+    fallback, `~` paths refused, no SSH agent; without an imported known_hosts and without the opt-in the attempt
+    fails with `ssh_known_hosts_missing` before dialing.
+  - **Manifest:** no storage permission is requested (checked on the processed merged manifest), and the app
+    reads SSH files only through the Storage Access Framework import.
+  - **Not yet:** the SSH form and `ProfileStore.validate` still accept a typed absolute path at save time; such
+    a profile saves but cannot connect.
+- Trusted keys fail closed. If the store cannot be read (I/O error, symlink, oversized, or any line that is not
+  a valid offer line) the attempt fails with `TRUSTED_KEYS_UNREADABLE` before any native session; it never opts
+  in with no keys, which would offer a changed key as a new server. If Core rejects the bytes the attempt fails
+  with the same code and `start` is never called. The profile editor shows "Trusted server keys could not be
+  read" with Forget enabled, which recovers.
+- `pendingAuth` kind `host_key` is parsed strictly by `SshAuthenticationController.parse`: 48-hex ids;
+  `host` from Core's literal alphabet as `host:port` (IPv6 bracketed); a known key type; `SHA256:` plus 43
+  unpadded base64 characters equal to the digest of the key in the line; and a `knownHostsLine` of exactly
+  three single-space printable ASCII fields, at most 12 KiB, whose host is the OpenSSH normalization of the
+  lowercased dialed `host` (bare for port 22, `[host]:port` otherwise, at most 300 characters) and whose type and key blob match
+  `keyType`. Anything else is rejected and never shown. Existing kinds are unchanged.
+- The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace. The dialog
+  sets `SecureFlagPolicy.SecureOn` on its own window (FLAG_SECURE on the dialog only; the activity window is
+  not made secure). Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
+  `cancelAuth`. Rejections use the existing failed states.
+- Persistence: a successful `ReplyAuth` is final in Core even if a timeout, Stop or network change follows,
+  so the line is persisted if and only if `ReplyAuth` returned success. After Core accepts `["accept"]`, `AuthAttempt` (service side) passes the `knownHostsLine` of the
+  offer it published under the same ids to `ProfileStore.rememberTrustedHostKey`, never UI input. Under the
+  store lock the profile must still exist; the line is deduplicated and the file capped at 256 KiB (Core's
+  limit). A failure or a full file leaves the session running (Core remembers the key for its reconnects) and
+  journals a fixed WARN.
+- Storage: `filesDir/trusted-hosts/<uuid>.known_hosts`, directory `0700`, file `0600`, one plain line per key,
+  replaced atomically (tmp, fsync, `ATOMIC_MOVE`, directory fsync). Reading never drops lines: any invalid line
+  makes the file unreadable (above). It is a separate top-level tree, outside `profiles/`, `ssconf/` and
+  `ssh-resources/`. Every access holds the store lock and takes no other lock;
+  `rememberTrustedHostKey` must never be called with the `VpnLive.gate` monitor held (lock order guard →
+  draft → resources → gate) and fails closed if it is. `compareAndDelete` removes the file best-effort under the
+  store lock. The fail-closed startup sweep also inventories `trusted-hosts/`: it deletes `<uuid>.known_hosts`
+  files without a `profiles/<uuid>.conf` and leftover `<uuid>.known_hosts.tmp-*` files, and any other entry,
+  directory or symlink makes it delete nothing at all. A new profile, including "Save as new profile", starts
+  with no trusted keys; a deleted profile counts 0 and Forget does nothing.
+- The profile editor's SSH section shows "Trusted server keys: N" with Forget (after a confirmation), which
+  deletes the file immediately; it is not part of Save. The count is read off Main when shown, on resume and on
+  every VPN state change.
+- `Status.LastError` mapping, ahead of the auth-history heuristic: `ssh_host_key_mismatch` →
+  `HOST_KEY_MISMATCH`, `ssh_host_key_rejected` → `AUTH_CANCELLED`, `ssh_host_key_unanswered` →
+  `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_host_key_ca_required` →
+  `HOST_KEY_CA_REQUIRED` (the imported known_hosts uses `@cert-authority`; forgetting app-owned keys does not
+  help, so it has its own message), `ssh_known_hosts_missing` → `SSH_KNOWN_HOSTS_MISSING`. The app's own
+  fixed codes `TRUSTED_KEYS_UNREADABLE` and `SSH_FILE_OUTSIDE_APP` are raised before Core runs. A changed key
+  is never offered and never accepted.
+- Recovery starts (sticky restart and always-on `SERVICE_INTERFACE`) never show UI. They classify with
+  `mustSkipRecovery`, which includes the same `mayNeedInteractiveAuth` that decides the opt-in, so every profile
+  that would opt in (and could therefore receive a host-key offer) is skipped before `runSession`. A recovery that
+  proceeds is positively non-SSH: it does not opt in and does not read the trusted-keys store, and the file guard
+  and fail-closed read still run on its input (`HostKeyRecoveryTest`).
+
 ## Session drop notice
 
 Without system lockdown, Android sends traffic over the physical network as soon as the TUN closes, so a session that ends on its own must not end silently (security audit M-1).

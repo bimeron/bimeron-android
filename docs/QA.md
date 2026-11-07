@@ -340,3 +340,42 @@ On a real phone (Wi-Fi ADB), with notifications allowed for Bimeron:
    light and dark themes: no clipping or overlap.
 7. External keyboard: Tab moves through profile rows and settings buttons, with a
    visible focus indicator.
+
+## SSH host-key TOFU device checklist
+
+Not yet run on a device. Use an SSH server you control, a profile with no
+imported known_hosts unless a step says otherwise, and compare fingerprints with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server. JVM coverage:
+`SshHostKeyOfferTest`, `SshHostKeyDialogTest`, `TrustedHostKeysTest`,
+`TrustedHostKeysSweepTest`, `TrustedHostKeysSectionTest`, `HostKeyOptInTest`,
+`NoExternalStorageTest`, `SshFileGuardTest`; JNI: `HostKeyOptInNativeTest`.
+
+1. First connect: the "New server" dialog shows `host:port`, the key type and
+   the full `SHA256:` fingerprint in monospace, matching the server. A screenshot
+   is blocked (FLAG_SECURE). Trust: the VPN connects, and the profile editor
+   shows "Trusted server keys: 1".
+2. Disconnect and connect again: no dialog, connects. Switch Wi-Fi/mobile while
+   connected (Core reconnect): no dialog.
+3. Forget, then connect and press Cancel: the attempt ends with
+   `AUTH_CANCELLED`, nothing is stored ("Trusted server keys: 0").
+4. Trust again, then change the server's host key (regenerate it): the next
+   connect fails with `HOST_KEY_MISMATCH` and its message, with no dialog. After
+   Forget in the profile editor, the next connect offers the new key.
+5. Profile with an imported known_hosts that lists the server: no dialog,
+   connects. With an imported known_hosts that lists a different key for the
+   server: `HOST_KEY_MISMATCH`, no dialog.
+6. Leave the dialog unanswered for 60 seconds: it closes and the attempt ends
+   with `AUTH_UNANSWERED`; nothing is stored.
+7. Rotate the device and lock/unlock while the dialog is shown: the dialog
+   stays (or reappears) for the same offer, and Trust still connects. Recreating
+   the activity never trusts by itself.
+8. Delete the profile: `files/trusted-hosts/<uuid>.known_hosts` is gone
+   (`adb shell run-as org.bimeron.app ls files/trusted-hosts`). "Save as new
+   profile" starts with no trusted keys.
+9. The journal shows no host, fingerprint or key text; at most the fixed
+   "Trusted server key was not saved" warning.
+10. Damage the store (`adb shell run-as org.bimeron.app sh -c 'echo x >> files/trusted-hosts/<uuid>.known_hosts'`):
+    the next connect fails with `TRUSTED_KEYS_UNREADABLE` and no dialog; the editor shows "Trusted server keys
+    could not be read"; Forget, then connect offers the server again.
+11. In Source config set `IdentityFile = /sdcard/.ssh/id_ed25519` (or an `ssh://...?known_hosts=/sdcard/...`
+    key): connecting fails with `SSH_FILE_OUTSIDE_APP` and nothing is dialed.

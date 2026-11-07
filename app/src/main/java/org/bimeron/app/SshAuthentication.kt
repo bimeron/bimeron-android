@@ -15,20 +15,27 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.window.DialogProperties
 
 /** Host serializes feed/reply/cancel on Main and invalidates on stop.
  * Create one controller per SSH session; never reuse across sessions or recreation. At most eight requests
- * are admitted; retired IDs remain protected until disposal. Host must protect the window with FLAG_SECURE.
+ * are admitted; retired IDs remain protected until disposal. [SshAuthenticationDialog] protects its own dialog
+ * window: it sets `SecureFlagPolicy.SecureOn` (FLAG_SECURE on the dialog window only); the host activity
+ * window is not made secure.
  * A submitted request stays visible until the next feed replaces or withdraws it: busy after an accepted reply,
  * [replyRejected] after a rejected one. After a rejection only Cancel is offered; otherwise only the next prompt
  * or Core's own per-prompt timeout moves the attempt forward. A rejected cancel keeps the request visible with
  * [cancelFailed]; a second Cancel then only closes the dialog locally.
  */
 internal class SshAuthenticationController {
-    class Request(val sessionId: String, val requestId: String, val kind: String, val prompts: List<String>)
+    /** A `host_key` offer carries [hostKey] and no prompts; every other kind carries prompts and no [hostKey]. */
+    class Request(val sessionId: String, val requestId: String, val kind: String, val prompts: List<String>,
+        val hostKey: HostKeyOffer? = null)
+    /** An accept-new host-key offer, already checked by [parse]: every field is consistent with the others. */
+    data class HostKeyOffer(val host: String, val keyType: String, val fingerprint: String, val knownHostsLine: String)
     var request by mutableStateOf<Request?>(null); private set
     var answers by mutableStateOf<List<String>>(emptyList()); private set
     var busy by mutableStateOf(false); private set
@@ -51,7 +58,7 @@ internal class SshAuthenticationController {
                 (sessionId != null && next.sessionId != sessionId))) return
         val old = request
         if (next != null && old != null && next.sessionId == old.sessionId && next.requestId == old.requestId) {
-            if (next.kind == old.kind && next.prompts == old.prompts) return
+            if (next.kind == old.kind && next.prompts == old.prompts && next.hostKey == old.hostKey) return
             // An immutable request changing under the same IDs is invalid.
             consumed.add(old.sessionId to old.requestId)
             clear(); return
@@ -78,7 +85,8 @@ internal class SshAuthenticationController {
         if (request !== current || !canSubmit) return
         busy = true; replyRejected = false; spent = current
         consumed.add(current.sessionId to current.requestId)
-        val wire = answers.joinToString(prefix = "[", postfix = "]") { quote(it) }
+        // A host-key offer has exactly one answer, the fixed acceptance; it never comes from user input.
+        val wire = if (current.hostKey != null) HOST_KEY_ACCEPT else answers.joinToString(prefix = "[", postfix = "]") { quote(it) }
         answers = emptyList()
         val accepted = try { reply(current.sessionId, current.requestId, wire) }
             catch (e: kotlinx.coroutines.CancellationException) { throw e }
@@ -108,11 +116,30 @@ internal class SshAuthenticationController {
     }
 
     companion object {
+        const val HOST_KEY_KIND = "host_key"
+        /** The only reply that accepts a host-key offer (core ADR 0035). */
+        const val HOST_KEY_ACCEPT = "[\"accept\"]"
+        /** SSH public-key types Core can offer in accept-new mode (no certificates; Core omits ssh-dss there). */
+        private val HOST_KEY_TYPES = setOf(
+            "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
+        )
+        /** Core's dialed-host alphabet; it excludes whitespace, patterns, lists, hashes and markers. */
+        private const val HOST_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_:%[]"
+        private val ID = Regex("[0-9a-fA-F]{48}")
+        private val FINGERPRINT = Regex("SHA256:[A-Za-z0-9+/]{43}")
+        private const val MAX_HOST = 512
+        /** Core's `ParseHostKeys` accepts at most 300 characters per known_hosts host. */
+        private const val MAX_LINE_HOST = 300
+        private const val MAX_LINE = 12288
+
         internal fun parse(wire: String?): Request? {
             if (wire == null) return null
             require(wire.length <= 16384 && validUnicode(wire) && wire.toByteArray(Charsets.UTF_8).size <= 16384)
             val json = AuthJson(wire).read() ?: return null
-            require(json is Map<*, *> && json.keys == setOf("sessionId", "requestId", "kind", "prompts", "echo"))
+            require(json is Map<*, *>)
+            if (json["kind"] == HOST_KEY_KIND) return parseHostKey(json)
+            require(json.keys == setOf("sessionId", "requestId", "kind", "prompts", "echo"))
             val session = json["sessionId"] as? String ?: error("")
             val request = json["requestId"] as? String ?: error("")
             require(listOf(session, request).all { it.matches(Regex("[0-9a-fA-F]{48}")) })
@@ -127,6 +154,84 @@ internal class SshAuthenticationController {
             val echo = json["echo"] as? List<*> ?: error("")
             require(echo.size == text.size && echo.all { it is Boolean })
             return Request(session, request, kind, text)
+        }
+
+        /**
+         * Strict `host_key` offer: exactly the seven string fields. [HostKeyOffer.knownHostsLine] must be the
+         * OpenSSH-normalized line for the lowercased displayed host, key type and fingerprint, so what is persisted is
+         * exactly what the user saw.
+         */
+        private fun parseHostKey(json: Map<*, *>): Request {
+            require(json.keys == setOf("sessionId", "requestId", "kind", "host", "keyType", "fingerprint", "knownHostsLine"))
+            val values = json.mapValues { it.value as? String ?: error("") }
+            val session = values.getValue("sessionId")
+            val request = values.getValue("requestId")
+            require(session.matches(ID) && request.matches(ID))
+            val offer = HostKeyOffer(values.getValue("host"), values.getValue("keyType"),
+                values.getValue("fingerprint"), values.getValue("knownHostsLine"))
+            require(validHostKey(offer))
+            return Request(session, request, HOST_KEY_KIND, emptyList(), offer)
+        }
+
+        /** True when every field of [offer] is well formed and consistent with the others. Never throws. */
+        internal fun validHostKey(offer: HostKeyOffer): Boolean = runCatching {
+            val (name, port) = splitHost(offer.host) ?: return false
+            if (offer.keyType !in HOST_KEY_TYPES || !offer.fingerprint.matches(FINGERPRINT)) return false
+            if (!validKnownHostsLine(offer.knownHostsLine)) return false
+            val fields = offer.knownHostsLine.split(' ')
+            // The dialed host:port, lowercased as Core does, then OpenSSH-normalized (bare for port 22).
+            val dialed = name.lowercase(java.util.Locale.ROOT)
+            val expectedHost = if (port == 22) dialed else "[$dialed]:$port"
+            if (fields[0] != expectedHost || fields[1] != offer.keyType) return false
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(java.util.Base64.getDecoder().decode(fields[2]))
+            offer.fingerprint == "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(digest)
+        }.getOrDefault(false)
+
+        /**
+         * A single plain line Core's `ParseHostKeys` accepts and an offer could produce: `host type base64`,
+         * single spaces, printable ASCII, a literal host (`name`, or `[name]:port` for a port other than 22),
+         * a known key type, and canonical base64 of a key blob of that type. Never throws.
+         */
+        internal fun validKnownHostsLine(line: String): Boolean = runCatching {
+            if (line.length > MAX_LINE || line.any { it !in '!'..'~' && it != ' ' }) return false
+            val fields = line.split(' ')
+            if (fields.size != 3 || fields.any { it.isEmpty() }) return false
+            val host = fields[0]
+            // Stored hosts are lowercase (Core lowercases before normalizing), so no case variant can coexist.
+            if (host.length > MAX_LINE_HOST || host.any { it !in HOST_CHARS || it in 'A'..'Z' }) return false
+            if (host.startsWith('[')) {
+                val (name, port) = splitHost(host) ?: return false
+                if (port == 22 || host != "[$name]:$port") return false
+            } else if (host.any { it == '[' || it == ']' }) return false
+            if (fields[1] !in HOST_KEY_TYPES) return false
+            val blob = java.util.Base64.getDecoder().decode(fields[2])
+            java.util.Base64.getEncoder().encodeToString(blob) == fields[2] && blobType(blob) == fields[1]
+        }.getOrDefault(false)
+
+        /** Splits Core's dialed `host:port` (IPv6 bracketed). Null when the host is not a literal Core could emit. */
+        private fun splitHost(host: String): Pair<String, Int>? {
+            if (host.isEmpty() || host.length > MAX_HOST || host.any { it !in HOST_CHARS }) return null
+            val (name, port) = if (host.startsWith('[')) {
+                val close = host.indexOf("]:")
+                if (close < 0) return null
+                host.substring(1, close) to host.substring(close + 2)
+            } else {
+                val colon = host.lastIndexOf(':')
+                if (colon < 0) return null
+                host.substring(0, colon) to host.substring(colon + 1)
+            }
+            if (name.isEmpty() || name.any { it == '[' || it == ']' } || (!host.startsWith('[') && ':' in name)) return null
+            val number = port.toIntOrNull() ?: return null
+            if (number !in 1..65535 || number.toString() != port) return null
+            return name to number
+        }
+
+        /** The type string that starts an SSH wire-format public key, or null when the blob is malformed. */
+        private fun blobType(blob: ByteArray): String? {
+            if (blob.size < 4) return null
+            val length = java.nio.ByteBuffer.wrap(blob, 0, 4).int
+            if (length !in 1..128 || blob.size <= 4 + length) return null
+            return String(blob, 4, length, Charsets.US_ASCII)
         }
         private fun validUnicode(s: String): Boolean {
             var i = 0
@@ -231,7 +336,7 @@ internal fun SshAuthenticationDialog(
     CompositionLocalProvider(LocalClipboardManager provides clipboard) {
         AlertDialog(onDismissRequest = dismiss,
             properties = DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
-            title = { Text(stringResource(R.string.ssh_auth_title)) },
+            title = { Text(stringResource(if (current.hostKey != null) R.string.ssh_host_key_title else R.string.ssh_auth_title)) },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) {
                 val hint = when {
                     controller.cancelFailed -> R.string.ssh_auth_cancel_failed
@@ -240,6 +345,7 @@ internal fun SshAuthenticationDialog(
                 }
                 if (hint != null) Text(stringResource(hint), color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                current.hostKey?.let { HostKeyDetails(it) }
                 current.prompts.forEachIndexed { index, prompt ->
                     OutlinedTextField(value = controller.answers.getOrElse(index) { "" },
                         onValueChange = { controller.answer(index, it) }, label = { Text(prompt) },
@@ -248,7 +354,17 @@ internal fun SshAuthenticationDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
                 }
             } },
-            confirmButton = { TextButton(enabled = controller.canSubmit, onClick = { scope.launch { controller.submit(current, reply) } }) { Text(stringResource(R.string.ssh_reply)) } },
+            confirmButton = { TextButton(enabled = controller.canSubmit, onClick = { scope.launch { controller.submit(current, reply) } }) { Text(stringResource(if (current.hostKey != null) R.string.ssh_host_key_trust else R.string.ssh_reply)) } },
             dismissButton = { TextButton(enabled = !controller.busy, onClick = dismiss) { Text(stringResource(R.string.ssh_cancel)) } })
     }
+}
+
+/** Body of a host-key offer: host, key type and the full fingerprint (never truncated), then the advice. */
+@Composable
+private fun HostKeyDetails(offer: SshAuthenticationController.HostKeyOffer) {
+    Text(stringResource(R.string.ssh_host_key_server, offer.host))
+    Text(stringResource(R.string.ssh_host_key_type, offer.keyType))
+    Text(stringResource(R.string.ssh_host_key_fingerprint_label))
+    Text(offer.fingerprint, fontFamily = FontFamily.Monospace)
+    Text(stringResource(R.string.ssh_host_key_verify_hint), color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

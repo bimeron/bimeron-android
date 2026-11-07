@@ -268,6 +268,8 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                             onFailure = { draft.error = context.getString(R.string.editor_validation_failed) },
                             onCancelled = {})
                     }
+                    if (sshDocument(doc)) TrustedHostKeysSection(profile.id, model.store::trustedHostKeyCount, model.store::forgetTrustedHostKeys, !locked,
+                        onFailure = { draft.error = context.getString(R.string.ssh_trusted_host_keys_forget_failed) }, refresh = vpn.state)
                     EditorHint(stringResource(R.string.editor_save_hint))
                     Button(onClick = { delete = true }, enabled = !locked, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer), modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.editor_delete_profile)) }
                 }

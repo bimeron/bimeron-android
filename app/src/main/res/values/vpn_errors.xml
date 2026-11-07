@@ -20,4 +20,9 @@
     <string name="vpn_error_ssconf_snapshot_invalid">The ssconf snapshot is invalid.</string>
     <string name="vpn_error_start_failed">Could not start VPN.</string>
     <string name="vpn_error_stop_failed">VPN stopped unexpectedly.</string>
+    <string name="vpn_error_host_key_mismatch">The server\'s host key has changed. The connection was refused to protect you. If the server was legitimately reinstalled, forget its trusted server keys in the profile editor, or import an updated known_hosts file, and connect again.</string>
+    <string name="vpn_error_host_key_ca_required">The server must present a host certificate signed by an authority trusted in the imported known_hosts file. The connection was refused to protect you.</string>
+    <string name="vpn_error_ssh_known_hosts_missing">The server\'s key could not be checked: this profile has no imported known_hosts file and no usable trusted server keys. Forget the trusted server keys in the profile editor, or import a known_hosts file, then connect again.</string>
+    <string name="vpn_error_trusted_keys_unreadable">The trusted server keys of this profile could not be read, so the connection was refused to protect you. Forget the trusted server keys in the profile editor, then connect again and verify the server\'s fingerprint.</string>
+    <string name="vpn_error_ssh_file_outside_app">This profile points to an SSH key or known_hosts file outside the app. Only files imported into the profile are used: import the file in the profile editor, then connect again.</string>
 </resources>
