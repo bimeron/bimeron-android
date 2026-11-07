@@ -261,6 +261,20 @@ URIs, keys, passwords, tokens, UUIDs, IPv4/IPv6, host:port, and paths;
 idempotence; unchanged ordinary messages; level filtering; size limits; clearing
 on connect; and report format with byte-based truncation.
 
+### Secret field keyboards
+
+Every field that can hold a secret (the editor's "Key or link", raw config,
+protocol form credentials and secret-classed values, ShadowTLS, other-URI forms,
+the add-profile key or link, SSH authentication answers) goes through
+`SecretInput`: autocorrect and capitalization off, `IME_FLAG_NO_PERSONALIZED_LEARNING`
+and `TYPE_TEXT_FLAG_NO_SUGGESTIONS`. Masked fields use the password variation; fields
+shown in clear (add-profile key or link, raw config, unmasked secret form values)
+use the visible-password variation, because Gboard ignores NO_SUGGESTIONS for plain
+text and URI fields. Raw config keeps the multi-line flag, so Enter inserts a new
+line. `SecretKeyboardTest` (JVM) reads the EditorInfo each focused field hands to
+the IME. On a device with Gboard, focusing "Key or link" (editor and add profile)
+or the raw config shows no suggestion strip.
+
 ## Not yet verified
 
 - Removing the task from Recents while the VPN is active, and traffic continuity
