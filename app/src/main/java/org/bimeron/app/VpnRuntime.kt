@@ -32,6 +32,16 @@ enum class VpnErrorCode(@StringRes val messageRes: Int) {
     AUTH_FAILED(R.string.vpn_error_auth_failed),
     AUTH_UNANSWERED(R.string.vpn_error_auth_unanswered),
     AUTH_CANCELLED(R.string.vpn_error_auth_cancelled),
+    /** Core refused a known SSH host whose key changed (`ssh_host_key_mismatch`); never offered to the user. */
+    HOST_KEY_MISMATCH(R.string.vpn_error_host_key_mismatch),
+    /** The imported known_hosts trusts a certificate authority and the server key matched nothing (`ssh_host_key_ca_required`). */
+    HOST_KEY_CA_REQUIRED(R.string.vpn_error_host_key_ca_required),
+    /** An SSH session had neither an imported known_hosts file nor the accept-new opt-in. */
+    SSH_KNOWN_HOSTS_MISSING(R.string.vpn_error_ssh_known_hosts_missing),
+    /** The profile's stored trusted host keys could not be read or Core refused them; nothing was dialed. */
+    TRUSTED_KEYS_UNREADABLE(R.string.vpn_error_trusted_keys_unreadable),
+    /** An SSH file reference points outside the profile's imported files (decision 8); nothing was dialed. */
+    SSH_FILE_OUTSIDE_APP(R.string.vpn_error_ssh_file_outside_app),
     RECOVERY_NEEDS_USER(R.string.vpn_error_recovery_needs_user),
     SSCONF_NETWORK_UNAVAILABLE(R.string.vpn_error_ssconf_network_unavailable),
     SSCONF_FETCH_FAILED(R.string.vpn_error_ssconf_fetch_failed),
@@ -244,9 +254,25 @@ internal fun teardownFailureCode(cleanupBlocked: Boolean, recoveryCleared: Boole
     else -> null
 }
 
+/**
+ * Explicit SSH host-key faults of an opted-in session (core ADR 0035). They name the cause, so they take
+ * precedence over the [AuthHistory] guess. `ssh_host_key_unknown` (no offer could be made) stays generic.
+ */
+internal val SSH_HOST_KEY_FAULTS = mapOf(
+    "ssh_host_key_mismatch" to VpnErrorCode.HOST_KEY_MISMATCH,
+    "ssh_host_key_rejected" to VpnErrorCode.AUTH_CANCELLED,
+    "ssh_host_key_unanswered" to VpnErrorCode.AUTH_UNANSWERED,
+    "ssh_host_key_unknown" to VpnErrorCode.SSH_CONNECTION_FAILED,
+    // Forgetting app-owned keys cannot help here, so it gets its own message instead of HOST_KEY_MISMATCH.
+    "ssh_host_key_ca_required" to VpnErrorCode.HOST_KEY_CA_REQUIRED,
+    // Core ADR 0036 (reported with or without the opt-in): SSH without imported known_hosts and without the opt-in.
+    "ssh_known_hosts_missing" to VpnErrorCode.SSH_KNOWN_HOSTS_MISSING,
+)
+
 internal fun coreFailureCode(
     state: String, lastError: String?, history: AuthHistory = AuthHistory.NONE,
 ): VpnErrorCode? = when {
+    lastError != null && lastError in SSH_HOST_KEY_FAULTS -> SSH_HOST_KEY_FAULTS.getValue(lastError)
     lastError == "ssh_connection_failed" -> authFailureCode(history)
     lastError?.contains("network", ignoreCase = true) == true -> VpnErrorCode.NETWORK_ERROR
     state == "failed" || state == "disconnected" || state == "reconnecting" -> VpnErrorCode.CORE_CONNECT_FAILED
@@ -419,9 +445,17 @@ internal class AuthAttempt(
     private val port: CoreSessionPort,
     private val isOpen: () -> Boolean,
     private val onCancelled: () -> Unit,
+    /**
+     * Runs on IO, outside every lock, after Core accepted `["accept"]` for a host-key offer. Receives the
+     * `knownHostsLine` of the validated offer this attempt published under the same ids, never UI input.
+     * Must not throw; the session proceeds whatever it does.
+     */
+    private val onHostKeyAccepted: (knownHostsLine: String) -> Unit = {},
 ) : AuthSink {
     private val lock = Any()
     private var offered: Pair<String, String>? = null
+    /** knownHostsLine per published host-key offer, at most Core's eight rounds; removed when answered. */
+    private val hostKeyLines = LinkedHashMap<Pair<String, String>, String>()
     private val answered = mutableSetOf<Pair<String, String>>()
     var history = AuthHistory.NONE
         get() = synchronized(lock) { field }
@@ -437,6 +471,12 @@ internal class AuthAttempt(
             offered?.let { if (it !in answered && history != AuthHistory.CANCELLED_BY_USER) history = AuthHistory.WITHDRAWN }
             offered = key
             if (key != null && wire != null && history != AuthHistory.CANCELLED_BY_USER) history = AuthHistory.OFFERED
+            request?.hostKey?.let { offer ->
+                if (key != null && wire != null) {
+                    if (hostKeyLines.size >= 8) hostKeyLines.remove(hostKeyLines.keys.first())
+                    hostKeyLines[key] = offer.knownHostsLine
+                }
+            }
         }
         if (key == null || wire == null) {
             VpnLive.publishAuth(token, null)
@@ -470,6 +510,7 @@ internal class AuthAttempt(
             // The endpoint validated token, registration and offer: the user's cancel stops the attempt
             // even if Core rejects it (e.g. it already withdrew the request). A Core exception still
             // propagates, so the endpoint reports REJECTED.
+            synchronized(lock) { hostKeyLines.remove(key) }
             try {
                 port.cancelAuth(sessionId, requestId)
             } finally {
@@ -477,10 +518,15 @@ internal class AuthAttempt(
             }
         } else {
             port.replyAuth(sessionId, requestId, answers)
-            synchronized(lock) {
+            val accepted = synchronized(lock) {
                 answered.add(key)
                 // A newer offer seen meanwhile keeps OFFERED; otherwise the reply is the last event.
                 if (history != AuthHistory.CANCELLED_BY_USER && (offered == null || offered == key)) history = AuthHistory.REPLIED
+                hostKeyLines.remove(key)
+            }
+            // Core accepted the reply, so the user's trust is final: persist only the offer's own line.
+            if (accepted != null && answers == SshAuthenticationController.HOST_KEY_ACCEPT) {
+                try { onHostKeyAccepted(accepted) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
             }
         }
         return true
@@ -551,7 +597,7 @@ private fun Char.isGoSpace(): Boolean = this in '\u0009'..'\u000d' || this == ' 
  * (`core: internal/config/config.go:530`). Stripping any run of both is a superset, so a value Core
  * would treat as `ssh://` is never missed (conservative).
  */
-private fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
+internal fun coreTrim(value: String): String = value.trim { it == '\uFEFF' || it.isGoSpace() }
 
 /** Allowlist name of the profile's protocol, or null when it cannot be determined without doubt. */
 private fun recoveryProtocol(document: ConfigDocument, profile: Profile): String? {
@@ -675,3 +721,47 @@ internal suspend fun sessionInputFor(
 
 /** The published state of a skipped recovery: a fixed code and message, no profile id or traffic. */
 internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureState(VpnErrorCode.RECOVERY_NEEDS_USER, text)
+
+/**
+ * Accept-new host-key opt-in bytes for [input] (core ADR 0035), or null for no opt-in. Every possibly SSH
+ * profile opts in (the conservative [sshCapable] classification), even with no stored keys, so an unknown
+ * host is offered instead of failing; an imported KnownHostsFile stays trusted alongside. Runs before the
+ * native session is created, guarded by [token] on both sides.
+ *
+ * Fails closed: if the store cannot be read (I/O error, symlink, or any line that is not a valid offer line)
+ * the attempt ends with [VpnErrorCode.TRUSTED_KEYS_UNREADABLE] before any native session. Opting in with no
+ * keys instead would turn a changed key for a trusted host into a "New server" offer. Forget recovers.
+ */
+internal suspend fun trustedHostKeysFor(
+    input: SessionInput,
+    token: Long,
+    read: suspend (java.util.UUID) -> ByteArray,
+    sshCapable: (SessionInput) -> Boolean = ::mayNeedInteractiveAuth,
+): ByteArray? {
+    ensureSessionAttempt(token)
+    if (!sshCapable(input)) return null
+    val bytes = try {
+        read(input.id)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        throw BimeronVpnService.SessionFailure(VpnErrorCode.TRUSTED_KEYS_UNREADABLE)
+    }
+    ensureSessionAttempt(token)
+    return bytes
+}
+
+/**
+ * Starts a created session: the host-key opt-in, when [trusted] is set, always precedes [start]. If Core
+ * refuses the stored lines the attempt fails with [VpnErrorCode.TRUSTED_KEYS_UNREADABLE] and [start] is never
+ * called. (Starting without the opt-in could not prompt, since Core then refuses unknown hosts or reports
+ * `ssh_known_hosts_missing`, but it would hide the actual cause and its remedy, Forget.)
+ */
+internal fun startCoreSession(trusted: ByteArray?, optIn: (ByteArray) -> Unit, start: () -> Unit) {
+    if (trusted != null) {
+        try { optIn(trusted) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { throw BimeronVpnService.SessionFailure(VpnErrorCode.TRUSTED_KEYS_UNREADABLE) }
+    }
+    start()
+}

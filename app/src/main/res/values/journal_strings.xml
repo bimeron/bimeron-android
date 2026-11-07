@@ -16,5 +16,6 @@
     <string name="journal_vpn_disconnected">VPN disconnected</string>
     <string name="journal_vpn_failed">VPN error</string>
     <string name="journal_vpn_failed_detail">VPN error: %1$s</string>
+    <string name="journal_trusted_host_key_not_saved">Trusted server key was not saved; it will be confirmed again on the next connection</string>
     <string name="journal_ssconf_fallback">ssconf update failed (%1$s); connecting with the saved configuration</string>
 </resources>

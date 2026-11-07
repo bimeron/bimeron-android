@@ -8,4 +8,10 @@
     <string name="ssh_auth_cancel_failed">Could not cancel. Tap Cancel again to close this dialog.</string>
     <string name="ssh_auth_error">Could not complete SSH authentication.</string>
     <string name="ssh_import_error">Could not import the SSH file.</string>
+    <string name="ssh_host_key_title">New server</string>
+    <string name="ssh_host_key_server">Server: %1$s</string>
+    <string name="ssh_host_key_type">Key type: %1$s</string>
+    <string name="ssh_host_key_fingerprint_label">SHA256 fingerprint:</string>
+    <string name="ssh_host_key_verify_hint">Verify this fingerprint with the server administrator before trusting.</string>
+    <string name="ssh_host_key_trust">Trust</string>
 </resources>
