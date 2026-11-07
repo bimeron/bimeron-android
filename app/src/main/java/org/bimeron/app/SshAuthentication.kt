@@ -4,7 +4,6 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -16,7 +15,6 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.window.DialogProperties
 
@@ -347,11 +345,13 @@ internal fun SshAuthenticationDialog(
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 current.hostKey?.let { HostKeyDetails(it) }
                 current.prompts.forEachIndexed { index, prompt ->
-                    OutlinedTextField(value = controller.answers.getOrElse(index) { "" },
-                        onValueChange = { controller.answer(index, it) }, label = { Text(prompt) },
-                        enabled = controller.canSubmit, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false))
+                    SecretInput(SecretKeyboard.Masked) { keyboardOptions ->
+                        OutlinedTextField(value = controller.answers.getOrElse(index) { "" },
+                            onValueChange = { controller.answer(index, it) }, label = { Text(prompt) },
+                            enabled = controller.canSubmit, singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = keyboardOptions)
+                    }
                 }
             } },
             confirmButton = { TextButton(enabled = controller.canSubmit, onClick = { scope.launch { controller.submit(current, reply) } }) { Text(stringResource(if (current.hostKey != null) R.string.ssh_host_key_trust else R.string.ssh_reply)) } },

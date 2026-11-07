@@ -73,13 +73,17 @@ internal fun otherUriCandidate(original: String, fields: Map<String, String>): S
                 "password", "auth" -> R.string.other_uri_password
                 else -> R.string.other_uri_option
             }) + if (field in setOf("sni", "alpn", "fp", "scy", "ps", "insecure", "udp_relay_mode")) " ($field)" else ""
-            OutlinedTextField(value = value, onValueChange = { edited ->
-                buffers = buffers + (field to edited)
-                if (buffers != model.fields) onPendingChange(true)
-            }, label = { Text(label) }, enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = if (secret && !reveal) PasswordVisualTransformation() else VisualTransformation.None,
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = if (field == "port") KeyboardType.Number else if (secret) KeyboardType.Password else KeyboardType.Text),
-                trailingIcon = if (secret) ({ TextButton(onClick = { reveal = !reveal }, enabled = enabled) { Text(stringResource(if (reveal) R.string.other_uri_hide else R.string.other_uri_show)) } }) else null)
+            val input: @Composable (KeyboardOptions) -> Unit = { keyboardOptions ->
+                OutlinedTextField(value = value, onValueChange = { edited ->
+                    buffers = buffers + (field to edited)
+                    if (buffers != model.fields) onPendingChange(true)
+                }, label = { Text(label) }, enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (secret && !reveal) PasswordVisualTransformation() else VisualTransformation.None,
+                    keyboardOptions = keyboardOptions,
+                    trailingIcon = if (secret) ({ TextButton(onClick = { reveal = !reveal }, enabled = enabled) { Text(stringResource(if (reveal) R.string.other_uri_hide else R.string.other_uri_show)) } }) else null)
+            }
+            if (secret) SecretInput(SecretKeyboard.Masked, input)
+            else input(KeyboardOptions(autoCorrectEnabled = false, keyboardType = if (field == "port") KeyboardType.Number else KeyboardType.Text))
         }
     }
     if (pending) {
