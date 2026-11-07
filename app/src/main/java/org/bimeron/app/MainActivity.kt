@@ -175,7 +175,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val profile = model.profiles.value.firstOrNull { it.id == model.selected.value } ?: return
-        if (profile.mode != "vpn" || Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$").containsMatchIn(profile.text)) return
+        if (!profile.startsAsSystemVpn) return
         val prepared = VpnService.prepare(this)
         if (prepared != null) {
             model.pendingPermissionId = profile.id
@@ -206,6 +206,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
     val loading by model.loading.collectAsStateWithLifecycle()
     val warning by model.warning.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
+    val notice by model.notice.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val logs by model.logs.collectAsStateWithLifecycle()
     val expanded by model.expanded.collectAsStateWithLifecycle()
@@ -261,19 +262,25 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
         if (addChoice) AlertDialog(onDismissRequest = { addChoice = false }, title = { Text(stringResource(R.string.add_profile)) }, text = { Column { Text(stringResource(R.string.supported_keys), style = MaterialTheme.typography.bodySmall); Spacer(Modifier.height(12.dp)); TextButton(onClick = { addChoice = false; model.clearError(); page = Page.ADD }) { Text(stringResource(R.string.paste_key)) }; TextButton(onClick = { addChoice = false; onImport() }) { Text(stringResource(R.string.import_conf)) } } }, confirmButton = { TextButton(onClick = { addChoice = false }) { Text(stringResource(R.string.cancel)) } })
         if (pendingSwitch != null) {
             val target = profiles.firstOrNull { it.id == pendingSwitch }
-            AlertDialog(onDismissRequest = model::cancelSwitch, title = { Text(stringResource(R.string.switch_profile_title)) },
-                text = { Text(stringResource(if (target?.mode == "vpn") R.string.switch_profile_message else R.string.switch_proxy_message, target?.name ?: "")) },
-                confirmButton = { TextButton(onClick = { model.confirmSwitch(onSwitch) }) { Text(stringResource(if (target?.mode == "vpn") R.string.switch_profile_action else R.string.select_proxy_action)) } },
+            AlertDialog(onDismissRequest = model::cancelSwitch,
+                title = { Text(stringResource(if (target?.startsAsSystemVpn == true) R.string.switch_profile_title else R.string.switch_disconnect_title)) },
+                text = { Text(stringResource(when {
+                    target?.startsAsSystemVpn == true -> R.string.switch_profile_message
+                    target?.mode == "vpn" -> R.string.switch_unsupported_message
+                    else -> R.string.switch_proxy_message
+                }, target?.name ?: "")) },
+                confirmButton = { TextButton(onClick = { model.confirmSwitch(onSwitch) }) { Text(stringResource(if (target?.startsAsSystemVpn == true) R.string.switch_profile_action else R.string.select_proxy_action)) } },
                 dismissButton = { TextButton(onClick = model::cancelSwitch) { Text(stringResource(R.string.cancel)) } })
         }
         if (pendingApply != null) {
             val changed = profiles.firstOrNull { it.id == pendingApply }
-            val canReconnect = changed?.mode == "vpn" && !Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$").containsMatchIn(changed.text)
+            val canReconnect = changed?.startsAsSystemVpn == true
             AlertDialog(onDismissRequest = model::clearPendingApply, title = { Text(stringResource(R.string.config_saved_title)) },
                 text = { Text(stringResource(if (canReconnect) R.string.config_saved_message else R.string.config_unavailable_message)) },
                 confirmButton = { if (canReconnect) TextButton(onClick = { model.applyPending(onApply) }) { Text(stringResource(R.string.reconnect_now)) } },
                 dismissButton = { TextButton(onClick = model::clearPendingApply) { Text(stringResource(R.string.later)) } })
         }
+        notice?.let { text -> if (error == null) AlertDialog(onDismissRequest = model::clearNotice, text = { Text(text) }, confirmButton = { TextButton(onClick = model::clearNotice) { Text("OK") } }) }
         if (error != null && page !in setOf(Page.ADD, Page.EDIT)) AlertDialog(onDismissRequest = model::clearError, title = { Text(stringResource(R.string.vpn_failed)) }, text = { Text(error.orEmpty()) }, confirmButton = { TextButton(onClick = model::clearError) { Text("OK") } })
     }
 }
@@ -485,7 +492,7 @@ internal fun profileProtocol(profile: Profile): String = when (profile.protocol.
 
 @Composable internal fun ConnectionCard(chosen: Profile?, vpn: VpnState, onPower: () -> Unit) {
     val active = vpn.state in setOf("connected", "connecting", "reconnecting", "permission")
-    val unsupported = chosen != null && (chosen.mode != "vpn" || Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$").containsMatchIn(chosen.text))
+    val unsupported = chosen != null && !chosen.startsAsSystemVpn
     val blocked = !active && (chosen == null || unsupported)
     val waiting = vpn.state in setOf("connecting", "reconnecting")
     val status = when {

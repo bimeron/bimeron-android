@@ -56,6 +56,30 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
   user granted the notification permission; without it the post is dropped
   silently and only the in-app state carries `RECOVERY_NEEDS_USER`. See
   "Notification permission" below for when the app asks.
+- Session drop notice (security audit M-1): when a session that had reached
+  Connected ends without the user stopping it (Core gives up, including while
+  reconnecting; packet I/O or network errors), or an unattended recovery start
+  (sticky restart) fails, the app posts "VPN disconnected" on the "VPN alerts"
+  channel (id `vpn_recovery`, shared with "Tap to reconnect").
+  The text is fixed (no profile, server or error text) and a tap opens the app. A
+  user stop (also a revoke from system settings or another VPN taking over), a new
+  connect or profile switch, an SSH sign-in cancel or host-key rejection, and the
+  recovery skip post nothing; a user connect that fails before Connected posts
+  nothing either, because the app shows the error. A failure caused by the
+  teardown of a stop that is already requested counts as the user's stop. The
+  notice keeps the default private lock-screen visibility. It is removed on the
+  next user connect and when a session reaches Connected. With notifications off
+  nothing is posted. Automated coverage: `DropNoticeDecisionTest` (JVM decision
+  table and gate wiring), `DropNotificationTest` (Robolectric, the real
+  notification), `DropNoticeServiceTest` (Robolectric, the service command loop
+  with only the native session replaced) and `DropNotificationInstrumentedTest`.
+  Not yet verified on a device; see "Session drop notice (device QA)" below. Not
+  covered: a system destroy of the service mid-session posts nothing (follow-up).
+- Switching profiles or applying a saved change while connected stops the old
+  session (its TUN closes) before the new one establishes its TUN (audit L-2).
+  In between, traffic uses the physical network unless system "Block connections
+  without VPN" (lockdown) is on. For an ssconf profile the gap includes the
+  connect-time fetch.
 
 ### Notification permission
 
@@ -89,7 +113,7 @@ Decision #1 (2026-11-07), implemented in `NotificationPrompt.kt` and wired in
 - API < 33: nothing is requested or recorded. For consistency the row is shown
   whenever the user turned the app's notifications off in system settings.
 - Only the app-level switch is checked; a single disabled channel (for example
-  "VPN recovery") does not show the row.
+  "VPN alerts") does not show the row.
 - Automated coverage: `NotificationPromptTest` (JVM/Robolectric: decision table,
   API < 33, consent flow, flag persistence across instances, request-once with a
   recreated controller, row shown/hidden with the system state, settings intent
@@ -125,7 +149,10 @@ Manual device checklist (API 33+ unless noted):
 - Three sections, collapsible profiles on the home screen and separate
   selected/active IDs. Selecting or adding keeps the list expansion until the
   next launch; reselecting does not start the VPN. Switching while connected
-  requires confirmation. A denied Android VPN consent is shown as an error.
+  requires confirmation. Confirming a switch to a profile Android cannot start
+  (proxy mode or core `KillSwitch = true`) disconnects the VPN and starts
+  nothing, and the dialog says so (audit L-3; `AppModelOperationsTest`). A denied
+  Android VPN consent is shown as an error.
   Configuration changes to the active profile are saved without disconnecting
   and offer a separate reconnect; renaming alone does not. Duration and traffic
   come from the service state.
@@ -278,6 +305,25 @@ On a real phone (Wi-Fi ADB) with a real ssconf endpoint:
    log. Network switches during a session (Core-internal reconnects) make no
    request either.
 
+## Session drop notice (device QA)
+
+On a real phone (Wi-Fi ADB), with notifications allowed for Bimeron:
+
+1. Connect, move the app to the background, then stop the server (or block it
+   on the router). When Core gives up, "VPN disconnected · Your traffic is no
+   longer protected by Bimeron. Tap to open the app." appears. It shows no profile
+   name or server. Tap it: Bimeron opens on the connection page with the error.
+2. Repeat with airplane mode on mid-session and wait until Core gives up
+   (Reconnecting, then the failure): the same notice appears.
+3. Tap Connect again: the notice disappears at once (user start).
+4. Connect, then stop from the app or the VPN notification: no notice.
+5. Connect, then disconnect from system VPN settings: no notice.
+6. Connect a profile whose server is offline (fails before Connected): no notice;
+   the error is shown in the app.
+7. SSH profile: cancel the sign-in prompt: no notice.
+8. Turn Bimeron's notifications off in system settings and repeat step 1: nothing
+   is posted and nothing crashes; the in-app state shows the failure.
+
 ## Manual TalkBack checklist
 
 1. Home: focus order is "Bimeron" → status → power button ("Connect, VPN
@@ -332,4 +378,10 @@ imported known_hosts unless a step says otherwise, and compare fingerprints with
     the next connect fails with `TRUSTED_KEYS_UNREADABLE` and no dialog; the editor shows "Trusted server keys
     could not be read"; Forget, then connect offers the server again.
 11. In Source config set `IdentityFile = /sdcard/.ssh/id_ed25519` (or an `ssh://...?known_hosts=/sdcard/...`
-    key): connecting fails with `SSH_FILE_OUTSIDE_APP` and nothing is dialed.
+    key): Done shows "SSH key and known_hosts files must be imported into this profile. Use the import
+    buttons." and nothing is saved; typing such a path in the form's key path field shows the field error.
+    A profile stored with such a path before this check (write it with `adb shell run-as`) still opens, fails
+    to save until the files are imported, and connecting it fails with `SSH_FILE_OUTSIDE_APP` with nothing
+    dialed. Export an SSH profile with imported files and import the `.conf`: a new profile is created with
+    empty key paths and the "Import the SSH key and known_hosts in the profile editor" notice. Adding the key
+    `ssh://u@host:22?identity=/sdcard/id` is refused with the link message.

@@ -606,17 +606,37 @@ class ProfileStore internal constructor(
     private fun syncDirectory(target: File = directory) { runCatching {
         java.nio.channels.FileChannel.open(target.toPath(), java.nio.file.StandardOpenOption.READ).use { it.force(true) }
     } }
-    suspend fun validate(text: String, imports: SshDraftResources? = null): Unit = withContext(Dispatchers.IO) {
+    /**
+     * Save-time validation of [text] as profile [id]; [compareAndSave] runs it for every save, before [guard].
+     * Import placeholders of [imports] (a draft of [id]) are resolved first, so they are checked as the
+     * published generations they become. Decision 8: every SSH file reference must be one of [id]'s own
+     * imported files under the trusted root ([SshFileGuard.insideApp], the check the service repeats at
+     * connect time). Pure, apart from the resolve and Core validation.
+     */
+    suspend fun validate(text: String, id: UUID, imports: SshDraftResources? = null): Unit = withContext(Dispatchers.IO) {
+        require(imports == null || imports.profileId == id)
         val text = imports?.resolve(text, resources) ?: text
         val normalized = Conf.read(text.toByteArray(StandardCharsets.UTF_8))
         val document = ConfigDocument.parse(normalized)
         document.validate()
         if (document.source()?.first == "File") throw ProfileError(R.string.profile_error_embed_key_file)
+        if (!SshFileGuard.insideApp(normalized, id, sshFilesRoot)) throw ProfileError(R.string.ssh_files_not_imported)
         validateCore(normalized)
         document.rules.forEachIndexed { index, rule ->
             if (rule.disabled) validateCore(document.enableRule(index, true).render())
         }
     }
+    /**
+     * The root SSH imports live under (`<root>/ssh-resources`): the trusted files root; a test store
+     * without a Context uses the parent of its profile directory, like [trustedHostStore]. Null (refuse
+     * every reference) for an untrusted root.
+     */
+    private val sshFilesRoot: File? = trustedRoot ?: if (context == null) directory.absoluteFile.parentFile else null
+    /**
+     * Outside text (import, link, added key) prepared for creating profile [id] before its [compareAndSave]:
+     * SSH file fields that are not [id]'s imports are cleared ([SshFileGuard.forNewProfile]). Pure.
+     */
+    internal fun prepareNewProfile(text: String, id: UUID): SshFileGuard.NewProfileText = SshFileGuard.forNewProfile(text, id, sshFilesRoot)
     private fun validateCore(text: String) {
         coreValidation?.let { it(text); return }
         try {
@@ -635,7 +655,7 @@ class ProfileStore internal constructor(
         synchronized(guard) { replay(requestId, request) }?.let { return@withContext it }
         require(draft == null || draft.profileId == id)
         val normalized = draft?.resolve(text, resources) ?: text
-        validate(normalized)
+        validate(normalized, id)
         val bytes = normalized.toByteArray(StandardCharsets.UTF_8)
         val digest = Sha256.of(bytes)
         val temp = File.createTempFile("profile-", ".tmp", directory)

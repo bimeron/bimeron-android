@@ -25,7 +25,7 @@ class ProfileEditorTest {
         val original = Conf.fromKey("Editor contract", "https://192.0.2.10:443")
         val profile = store.save(original)
         try {
-            store.validate(Conf.fromKey("Dynamic", "ssconf://example.invalid/key"))
+            store.validate(Conf.fromKey("Dynamic", "ssconf://example.invalid/key"), java.util.UUID.randomUUID())
             val disabled = ConfigDocument.parse(original).addRule().enableRule(0, false).render()
             store.save(disabled, profile.id)
             assertEquals(disabled, store.load().first.single { it.id == profile.id }.text)

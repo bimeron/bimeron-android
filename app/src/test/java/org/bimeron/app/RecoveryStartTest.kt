@@ -23,6 +23,14 @@ class RecoveryStartTest {
     @get:Rule val temp = TemporaryFolder()
     @After fun reset() { VpnLive.resetAfterProcessStart() }
 
+    /** Records the drop notice (M-1) effects of [noteStartCommand]. */
+    private class FakeDropNotice : DropNotice {
+        val effects = mutableListOf<String>()
+        override fun post() { effects += "post" }
+        override fun cancel() { effects += "cancel" }
+    }
+    private val drop = FakeDropNotice()
+
     private val sshText = Conf.fromKey("Home server", "ssh://user@example.com:22")
     private val ssText = Conf.fromKey("Home server", "ss://YWVzLTEyOC1nY206c2VjcmV0@example.com:8388")
 
@@ -52,7 +60,7 @@ class RecoveryStartTest {
 
     @Test fun interactiveRecoveryClearsIdPostsNotificationAndPublishesUnderItsToken() = runBlocking {
         val port = FakePort { _, _ -> input(sshText) }
-        noteStartCommand(true, port)
+        noteStartCommand(true, port, drop)
         val token = VpnLive.nextAttempt()
         val plan = planStart(true, UUID.randomUUID().toString(), token, port)
         assertEquals(StartPlan.Skipped, plan)
@@ -156,23 +164,25 @@ class RecoveryStartTest {
 
     @Test fun userStartQueuedBehindRecoverySkipCancelsNotification() = runBlocking {
         val port = FakePort { _, _ -> input(sshText) }
-        noteStartCommand(true, port)
+        noteStartCommand(true, port, drop)
         assertEquals(StartPlan.Skipped, planStart(true, "id", VpnLive.nextAttempt(), port))
         assertTrue(port.notificationShown)
         port.effects.clear()
-        noteStartCommand(false, port)
+        noteStartCommand(false, port, drop)
         val plan = planStart(false, "id", VpnLive.nextAttempt(), port,
             classify = { fail("user start classified"); true })
         assertEquals(StartPlan.Proceed(null), plan)
         assertEquals(listOf("cancel"), port.effects)
+        assertEquals(listOf("cancel"), drop.effects)
         assertEquals(1, port.reads)
         assertTrue(!port.notificationShown)
     }
 
     @Test fun recoveryStartNeverCancelsNotification() {
         val port = FakePort { _, _ -> null }
-        noteStartCommand(true, port)
+        noteStartCommand(true, port, drop)
         assertTrue(port.effects.isEmpty())
+        assertTrue(drop.effects.isEmpty())
     }
 
     @Test fun nonInteractiveRecoveryProceedsWithTheClassifiedInput() = runBlocking {

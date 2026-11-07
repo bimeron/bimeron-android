@@ -56,8 +56,14 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
     fails with `ssh_known_hosts_missing` before dialing.
   - **Manifest:** no storage permission is requested (checked on the processed merged manifest), and the app
     reads SSH files only through the Storage Access Framework import.
-  - **Not yet:** the SSH form and `ProfileStore.validate` still accept a typed absolute path at save time; such
-    a profile saves but cannot connect.
+  - **Save (every save path, through `compareAndSave`):** `ProfileStore.validate` applies the same check
+    (`SshFileGuard.insideApp(text, id, filesRoot)`, which the service's check delegates to) after resolving the
+    draft's import placeholders, before the store lock, and refuses with the fixed `ssh_files_not_imported`
+    message. The SSH form marks such typed paths at the field. Profiles stored earlier with outside paths
+    still load and open; they fail to save until the files are imported, and fail to connect as above.
+    Creating a profile from outside text (import, link, added key) first clears file fields the new profile
+    does not own and tells the user to import the files in the editor; `ssh://` links with file parameters
+    are refused, never rewritten.
 - Trusted keys fail closed. If the store cannot be read (I/O error, symlink, oversized, or any line that is not
   a valid offer line) the attempt fails with `TRUSTED_KEYS_UNREADABLE` before any native session; it never opts
   in with no keys, which would offer a changed key as a new server. If Core rejects the bytes the attempt fails
@@ -104,3 +110,16 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   that would opt in (and could therefore receive a host-key offer) is skipped before `runSession`. A recovery that
   proceeds is positively non-SSH: it does not opt in and does not read the trusted-keys store, and the file guard
   and fail-closed read still run on its input (`HostKeyRecoveryTest`).
+
+## Session drop notice
+
+Without system lockdown, Android sends traffic over the physical network as soon as the TUN closes, so a session that ends on its own must not end silently (security audit M-1).
+
+- When `Command.Finished` arrives for the current attempt, `noteSessionFinished` / `shouldNotifyDrop` (`VpnRuntime.kt`) decide whether to post "VPN disconnected" (notification id 3, on the recovery channel `vpn_recovery`, shown as "VPN alerts"; opens `MainActivity`). The text is fixed: no profile name, id, server, Core or error text. Lock-screen visibility stays the default (private), like the recovery notification, and it alerts once.
+- It is posted when the attempt was not ended by the user and either reached `connected` (a later failure in any state notifies, including Core giving up while `reconnecting`) or was a recovery start (sticky restart, always-on), which runs unattended. A recovery start that fails before its session runs (`CLEANUP_BLOCKED`, `RECOVERY_STATE_FAILED` in the start branch) is announced the same way.
+- It is never posted for `Command.Stop` (including `onRevoke`), a newer `Start` (superseded token), `onDestroy` (all three advance the attempt gate), a failure whose `Command.Finished` was queued ahead of an in-app STOP or `onRevoke` that is already sent but not yet consumed (the stop's own system teardown can fail the session first, while its token is still current), `AUTH_CANCELLED` (SSH sign-in cancel or host-key rejection) or `RECOVERY_NEEDS_USER` (which has its own "Tap to reconnect" notification). A user connect that fails before `connected` is not announced: the user is in the app and sees the error.
+- The user-intent check uses the code the attempt ended with, before a teardown code (`CLEANUP_BLOCKED`, `RECOVERY_STATE_FAILED`) replaces it. No new `VpnErrorCode` is added.
+- It is cancelled on the next user `START` (`noteStartCommand`, like the recovery notification) and when a session reaches `connected`. With notifications off (`POST_NOTIFICATIONS` not granted, or turned off) nothing is posted.
+- Known gaps (follow-ups): if the system destroys the service mid-session without a stop, nothing is posted (`onDestroy` cancels the command loop); and if Android delivers `onRevoke` only after the session's `Command.Finished` was handled, that revoke still shows the notice.
+- Service wiring is covered by `DropNoticeServiceTest` (Robolectric, through `BimeronVpnService.sessionDriverForTest`, which replaces only the native part of a session).
+- Switch and apply stop the old session before the new TUN exists, so protection briefly lapses without lockdown (audit L-2). This is a known limitation; see QA.
