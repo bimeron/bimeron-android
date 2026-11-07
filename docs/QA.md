@@ -59,17 +59,22 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
 - Session drop notice (security audit M-1): when a session that had reached
   Connected ends without the user stopping it (Core gives up, including while
   reconnecting; packet I/O or network errors), or an unattended recovery start
-  (sticky restart) fails, the app posts "VPN disconnected" on the recovery channel.
+  (sticky restart) fails, the app posts "VPN disconnected" on the "VPN alerts"
+  channel (id `vpn_recovery`, shared with "Tap to reconnect").
   The text is fixed (no profile, server or error text) and a tap opens the app. A
   user stop (also a revoke from system settings or another VPN taking over), a new
   connect or profile switch, an SSH sign-in cancel or host-key rejection, and the
   recovery skip post nothing; a user connect that fails before Connected posts
-  nothing either, because the app shows the error. The notice is removed on the
+  nothing either, because the app shows the error. A failure caused by the
+  teardown of a stop that is already requested counts as the user's stop. The
+  notice keeps the default private lock-screen visibility. It is removed on the
   next user connect and when a session reaches Connected. With notifications off
   nothing is posted. Automated coverage: `DropNoticeDecisionTest` (JVM decision
-  table and gate wiring) and `DropNotificationTest` (Robolectric, the real
-  notification). Not yet verified on a device; see "Session drop notice (device
-  QA)" below.
+  table and gate wiring), `DropNotificationTest` (Robolectric, the real
+  notification), `DropNoticeServiceTest` (Robolectric, the service command loop
+  with only the native session replaced) and `DropNotificationInstrumentedTest`.
+  Not yet verified on a device; see "Session drop notice (device QA)" below. Not
+  covered: a system destroy of the service mid-session posts nothing (follow-up).
 - Switching profiles or applying a saved change while connected stops the old
   session (its TUN closes) before the new one establishes its TUN (audit L-2).
   In between, traffic uses the physical network unless system "Block connections
@@ -108,7 +113,7 @@ Decision #1 (2026-11-07), implemented in `NotificationPrompt.kt` and wired in
 - API < 33: nothing is requested or recorded. For consistency the row is shown
   whenever the user turned the app's notifications off in system settings.
 - Only the app-level switch is checked; a single disabled channel (for example
-  "VPN recovery") does not show the row.
+  "VPN alerts") does not show the row.
 - Automated coverage: `NotificationPromptTest` (JVM/Robolectric: decision table,
   API < 33, consent flow, flag persistence across instances, request-once with a
   recreated controller, row shown/hidden with the system state, settings intent
