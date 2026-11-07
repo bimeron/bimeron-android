@@ -102,4 +102,14 @@ class SsConfProtocolFormTest {
         assertFalse(SsConfForms.linkInvalid(valid, editingLink = true))
         assertTrue(SsConfForms.linkInvalid(ConfigDocument.parse(text("SSConf", "ssconf://host/a b")), editingLink = false))
     }
+
+    @Test fun profileListShowsSsconfInLowercase() {
+        for (key in listOf("SSConf", "Key")) {
+            val profile = Conf.parse(Conf.fromKey("List", uri).replace("\nSSConf = ", "\n$key = "))
+            assertEquals(key, profile.protocol)
+            assertEquals("ssconf", profileProtocol(profile))
+        }
+        assertEquals("Shadowsocks", profileProtocol(Conf.parse(Conf.fromKey("List", "ss://YWVzLTEyOC1nY206cGFzcw@example.com:443"))))
+        assertEquals("VLESS", profileProtocol(Profile("id", "List", "VLESS", "vpn", "")))
+    }
 }
