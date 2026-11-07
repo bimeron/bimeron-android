@@ -57,12 +57,17 @@ internal object ProtocolForms {
                 val secret = field.secret
                 var reveal by remember(draft.profile.id) { mutableStateOf(false) }
                 val error = descriptor.fieldError(doc, key, draft.resources)
-                OutlinedTextField(value = doc.value("AccessKey", key), onValueChange = { draft.set("AccessKey", key, it) },
-                    label = { Text(label) }, enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    isError = error != null, supportingText = error?.let { { Text(stringResource(it)) } },
-                    visualTransformation = if (secret && !reveal) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = when (field.keyboardType) { ProtocolKeyboardType.TEXT -> KeyboardType.Text; ProtocolKeyboardType.NUMBER -> KeyboardType.Number; ProtocolKeyboardType.PASSWORD -> KeyboardType.Password }),
-                    trailingIcon = if (secret) ({ TextButton(onClick = { reveal = !reveal }, enabled = enabled) { Text(stringResource(if (reveal) R.string.protocol_form_hide else R.string.protocol_form_show)) } }) else null)
+                val input: @Composable (KeyboardOptions) -> Unit = { keyboardOptions ->
+                    OutlinedTextField(value = doc.value("AccessKey", key), onValueChange = { draft.set("AccessKey", key, it) },
+                        label = { Text(label) }, enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        isError = error != null, supportingText = error?.let { { Text(stringResource(it)) } },
+                        visualTransformation = if (secret && !reveal) PasswordVisualTransformation() else VisualTransformation.None,
+                        keyboardOptions = keyboardOptions,
+                        trailingIcon = if (secret) ({ TextButton(onClick = { reveal = !reveal }, enabled = enabled) { Text(stringResource(if (reveal) R.string.protocol_form_hide else R.string.protocol_form_show)) } }) else null)
+                }
+                val secretKeyboard = field.secretKeyboard
+                if (secretKeyboard != null) SecretInput(secretKeyboard, input)
+                else input(KeyboardOptions(autoCorrectEnabled = false, keyboardType = when (field.keyboardType) { ProtocolKeyboardType.TEXT -> KeyboardType.Text; ProtocolKeyboardType.NUMBER -> KeyboardType.Number; ProtocolKeyboardType.PASSWORD -> KeyboardType.Password }))
             }
             if (field.removable) {
                 TextButton(onClick = { draft.edit(doc.remove("AccessKey", key)) }, enabled = enabled) {

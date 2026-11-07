@@ -31,7 +31,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -59,8 +58,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.Hyphens
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -591,14 +588,17 @@ internal fun profileProtocol(profile: Profile): String = when (profile.protocol.
 }
 @Composable private fun SimplePage(title: String, back: () -> Unit, content: @Composable ColumnScope.() -> Unit) { PageFrame { PageHeader(title, onBack = back); CardBlock(content) } }
 
-@Composable private fun AddPage(model: AppModel, busy: Boolean, error: String?, onBack: () -> Unit, done: () -> Unit) {
+@Composable internal fun AddPage(model: AppModel, busy: Boolean, error: String?, onBack: () -> Unit, done: () -> Unit) {
     var name by remember { mutableStateOf("") }; var key by remember { mutableStateOf("") }; var edited by remember { mutableStateOf(false) }
     PageFrame {
         PageHeader(stringResource(R.string.add_profile), onBack = onBack)
         CardBlock {
             OutlinedTextField(name, { name = it; edited = true }, label = { Text(stringResource(R.string.profile_name)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Spacer(Modifier.height(16.dp))
-            OutlinedTextField(key, { value -> key = value; if (!edited) { val fragment = value.substringAfter('#', ""); if (fragment.isNotEmpty()) name = android.net.Uri.decode(fragment).filterNot { it.isISOControl() }.take(128) } }, label = { Text(stringResource(R.string.key_or_link)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp), keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri), minLines = 4)
+            // Not masked, but it holds the key or link: a secret keyboard (no learning, no suggestions).
+            SecretInput(SecretKeyboard.Link) { keyboardOptions ->
+                OutlinedTextField(key, { value -> key = value; if (!edited) { val fragment = value.substringAfter('#', ""); if (fragment.isNotEmpty()) name = android.net.Uri.decode(fragment).filterNot { it.isISOControl() }.take(128) } }, label = { Text(stringResource(R.string.key_or_link)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 150.dp), keyboardOptions = keyboardOptions, minLines = 4)
+            }
             Spacer(Modifier.height(10.dp)); Text(stringResource(R.string.supported_keys), style = MaterialTheme.typography.bodySmall)
             if (error != null) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 10.dp).semantics { liveRegion = LiveRegionMode.Polite })
             Spacer(Modifier.height(22.dp)); Button(onClick = { model.addKey(name, key, done) }, enabled = name.isNotBlank() && key.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.add)) }

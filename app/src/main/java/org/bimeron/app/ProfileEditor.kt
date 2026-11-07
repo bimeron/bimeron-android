@@ -245,22 +245,24 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                         OtherUriProtocolSettings(draft, !locked) { draft.pendingProtocolEdits = it }
                     } else if (source != null && source.first != "File") {
                         // Only an ssconf link is editable here, under the key it is stored in; other sources stay read-only.
-                        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = source.second,
-                            onValueChange = { if (editLink) draft.set("AccessKey", source.first, it) }, readOnly = !editLink, singleLine = editLink,
-                            label = { Text(stringResource(R.string.editor_key_or_link)) }, enabled = !locked && !(editLink && draft.rawInvalid), modifier = Modifier.fillMaxWidth(),
-                            visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                            trailingIcon = {
-                                Row {
-                                    IconButton(onClick = { reveal = !reveal }) { Icon(if (reveal) Icons.Default.VisibilityOff else Icons.Default.Visibility, if (reveal) stringResource(R.string.editor_hide_key) else stringResource(R.string.editor_show_key)) }
-                                    IconButton(onClick = {
-                                        val clip = android.content.ClipData.newPlainText("Bimeron access key", source.second)
-                                        clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
-                                        context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
-                                        android.widget.Toast.makeText(context, context.getString(R.string.editor_key_copied), android.widget.Toast.LENGTH_SHORT).show()
-                                    }) { Icon(Icons.Default.ContentCopy, stringResource(R.string.editor_copy_key)) }
-                                }
-                            })
+                        SecretInput(SecretKeyboard.Masked) { keyboardOptions ->
+                            OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = source.second,
+                                onValueChange = { if (editLink) draft.set("AccessKey", source.first, it) }, readOnly = !editLink, singleLine = editLink,
+                                label = { Text(stringResource(R.string.editor_key_or_link)) }, enabled = !locked && !(editLink && draft.rawInvalid), modifier = Modifier.fillMaxWidth(),
+                                visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = keyboardOptions,
+                                trailingIcon = {
+                                    Row {
+                                        IconButton(onClick = { reveal = !reveal }) { Icon(if (reveal) Icons.Default.VisibilityOff else Icons.Default.Visibility, if (reveal) stringResource(R.string.editor_hide_key) else stringResource(R.string.editor_show_key)) }
+                                        IconButton(onClick = {
+                                            val clip = android.content.ClipData.newPlainText("Bimeron access key", source.second)
+                                            clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+                                            context.getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+                                            android.widget.Toast.makeText(context, context.getString(R.string.editor_key_copied), android.widget.Toast.LENGTH_SHORT).show()
+                                        }) { Icon(Icons.Default.ContentCopy, stringResource(R.string.editor_copy_key)) }
+                                    }
+                                })
+                        }
                     } else EditorHint(stringResource(R.string.editor_source_hint))
                     if (editLink || SsConfForms.supported(doc) || SsConfForms.protected(doc)) SsConfSettings(draft, !locked, editLink)
                     else ProtocolSettings(draft, !locked)
@@ -332,10 +334,12 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                 3 -> {
                     EditorHint(stringResource(R.string.editor_raw_hint))
                     if (protected) TextButton(onClick = { rawReveal = !rawReveal }, enabled = !locked) { Text(stringResource(if (rawReveal) R.string.protocol_form_hide else R.string.protocol_form_show)) }
-                    if (!protected || rawReveal) OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = draft.source, onValueChange = draft::update, enabled = !locked, modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp),
-                        label = { Text(stringResource(R.string.editor_raw_config)) }, textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Password),
-                        visualTransformation = IniHighlight(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant), minLines = 12)
+                    if (!protected || rawReveal) SecretInput(SecretKeyboard.MultiLine) { keyboardOptions ->
+                        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = draft.source, onValueChange = draft::update, enabled = !locked, modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp),
+                            label = { Text(stringResource(R.string.editor_raw_config)) }, textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                            keyboardOptions = keyboardOptions,
+                            visualTransformation = IniHighlight(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant), minLines = 12)
+                    }
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { validate(false) }, enabled = !locked && !draft.pendingProtocolEdits && !draft.rawInvalid) { Text(stringResource(R.string.editor_validate)) }
                         OutlinedButton(onClick = { draft.edit(doc.formatted()) }, enabled = !locked && !draft.pendingProtocolEdits && !draft.rawInvalid) { Text(stringResource(R.string.editor_format)) }
