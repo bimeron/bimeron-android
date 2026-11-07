@@ -62,7 +62,9 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
         private set
     /** The conflict panel shown for this draft, if any. Main-thread owned. */
     var conflict by mutableStateOf<EditorConflict?>(null)
+    /** Keeps the saved SSH files of every base this draft had pinned until it is disposed (save-as-new copies them). */
     val resources = SshDraftResources(runCatching { java.util.UUID.fromString(profile.id) }.getOrElse { java.util.UUID.randomUUID() })
+        .also { it.pinBase(profile.text) }
     fun importKey(kind: SshProfileResources.Kind, token: SshProfileResources.StagedToken): Boolean {
         if (rawInvalid) return false
         val reference = resources.accept(token) ?: return false

@@ -295,4 +295,36 @@ class SshProfileResourcesTest {
         File(saved.path).delete()
         failure { store.copyCommitted(id, saved.path, SshProfileResources.Kind.IDENTITY) }
     }
+
+    @Test fun pinnedBaseGenerationsSurviveUntilTheLastDraftReleasesThem() {
+        val store = store()
+        val id = UUID.randomUUID()
+        val saved = imported(store, id, SshProfileResources.Kind.IDENTITY, "saved")
+        store.afterSaved(id, setOf(saved.path))
+        val text = "[AccessKey]\nType = ssh\nIdentityFile = ${saved.path}\n"
+        val first = SshDraftResources(id).apply { pinBase(text) }
+        val second = SshDraftResources(id).apply { pinBase(text) }
+        // A path outside this profile's generations is never pinned.
+        assertNull(SshGenerationPins.generationOf(UUID.randomUUID(), saved.path))
+        assertNull(SshGenerationPins.generationOf(id, "/tmp/identity"))
+        store.afterSaved(id, emptySet())
+        assertTrue(File(saved.path).exists())
+        first.dispose(store)
+        assertTrue("still pinned by the second draft", File(saved.path).exists())
+        second.dispose(store)
+        assertFalse(File(saved.path).exists())
+        // Referenced again before release: the pin no longer defers a prune, so release keeps it.
+        val again = imported(store, id, SshProfileResources.Kind.IDENTITY, "again")
+        val draft = SshDraftResources(id).apply { pinBase("[AccessKey]\nType = ssh\nIdentityFile = ${again.path}\n") }
+        store.afterSaved(id, emptySet())
+        store.afterSaved(id, setOf(again.path))
+        draft.dispose(store)
+        assertTrue(File(again.path).exists())
+        // Deleted while pinned: kept, then removed with the empty profile directory on release.
+        val pinned = SshDraftResources(id).apply { pinBase("[AccessKey]\nType = ssh\nIdentityFile = ${again.path}\n") }
+        store.afterDeleted(id)
+        assertTrue(File(again.path).exists())
+        pinned.dispose(store)
+        assertFalse(File(again.path).parentFile.parentFile.exists())
+    }
 }

@@ -6,7 +6,19 @@ import java.util.UUID
 class SshDraftResources(val profileId: UUID) {
     private val tokens = linkedMapOf<String, SshProfileResources.StagedToken>()
     private val committed = mutableSetOf<SshProfileResources.StagedToken>()
+    private val pins = mutableSetOf<String>()
     private var disposed = false
+
+    /**
+     * Pins the saved generations that [text] (a base this draft was opened or rebased at) references, so
+     * another writer's save or delete of the profile keeps them while this draft may still save them,
+     * e.g. as a new profile. Released by [dispose]. Memory only; lock order: draft, then the pin registry.
+     */
+    @Synchronized fun pinBase(text: String) {
+        if (disposed) return
+        val paths = runCatching { paths(text) }.getOrDefault(emptySet())
+        paths.mapNotNull { SshGenerationPins.generationOf(profileId, it) }.filter { pins.add(it) }.let(SshGenerationPins::pin)
+    }
 
     @Synchronized fun accept(token: SshProfileResources.StagedToken): String? {
         if (disposed) return null
@@ -76,6 +88,11 @@ class SshDraftResources(val profileId: UUID) {
             runCatching { token.prepared?.let(resources::abort) ?: resources.discard(token) }
         }
         tokens.clear()
+        if (pins.isNotEmpty()) {
+            SshGenerationPins.release(pins)
+            runCatching { resources.afterUnpinned(pins) }
+            pins.clear()
+        }
     }
 
     companion object {
@@ -85,5 +102,36 @@ class SshDraftResources(val profileId: UUID) {
             val document = ConfigDocument.parse(text)
             return fields.keys.map { document.value("AccessKey", it) }.filter { it.isNotEmpty() }.toSet()
         }
+    }
+}
+
+/**
+ * Process-wide, memory-only pins on saved SSH generation directories referenced by open editor drafts'
+ * base texts. [SshProfileResources.afterSaved] and [SshProfileResources.afterDeleted] keep pinned
+ * generations. The startup sweep runs before any draft exists and ignores pins. Innermost lock: it never
+ * calls out while held.
+ */
+internal object SshGenerationPins {
+    private val counts = mutableMapOf<String, Int>()
+
+    @Synchronized fun pin(directories: Collection<String>) { directories.forEach { counts[it] = (counts[it] ?: 0) + 1 } }
+    @Synchronized fun release(directories: Collection<String>) {
+        directories.forEach { directory ->
+            val count = (counts[directory] ?: return@forEach) - 1
+            if (count > 0) counts[directory] = count else counts.remove(directory)
+        }
+    }
+    @Synchronized fun pinned(directory: String) = directory in counts
+
+    /** The generation directory of a saved file of [profileId], from the path alone (no filesystem access). */
+    fun generationOf(profileId: UUID, path: String): String? {
+        val file = java.io.File(path)
+        if (!file.isAbsolute || file.toPath().normalize().toString() != path) return null
+        if (SshProfileResources.Kind.entries.none { it.filename == file.name }) return null
+        val generation = file.parentFile ?: return null
+        val profile = generation.parentFile ?: return null
+        if (profile.name != profileId.toString() || profile.parentFile?.name != "profiles") return null
+        if (runCatching { UUID.fromString(generation.name).toString() == generation.name }.getOrDefault(false).not()) return null
+        return generation.path
     }
 }
