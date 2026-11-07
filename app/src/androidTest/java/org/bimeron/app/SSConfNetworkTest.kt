@@ -17,6 +17,7 @@ import org.junit.runner.RunWith
 import java.net.DatagramSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Run only on an allocated isolated device. Temporarily sets consent app-op; never starts a VPN. */
 @RunWith(AndroidJUnit4::class)
@@ -171,9 +172,22 @@ class SSConfNetworkTest {
         }
     }
 
-    private class TrackingContext(base: Context, private val deliver: Boolean = true) : android.content.ContextWrapper(base) {
+    /**
+     * Records the real binding seen by the lease. The framework delivers onServiceConnected on main,
+     * possibly before bindService returns on the worker, so [bound] is only meaningful once
+     * [bindReturned] has opened. [returnAfterConnection] forces that connection-first order;
+     * [release] holds the worker inside bindService until the test opens it.
+     */
+    private class TrackingContext(
+        base: Context,
+        private val deliver: Boolean = true,
+        private val returnAfterConnection: Boolean = false,
+        private val release: CountDownLatch? = null,
+    ) : android.content.ContextWrapper(base) {
         override fun getApplicationContext(): Context = this
         val connected = CountDownLatch(1)
+        val bindReturned = CountDownLatch(1)
+        val unbinds = AtomicInteger()
         @Volatile var bound = false
         @Volatile var service: BimeronVpnService? = null
         private var forwarded: ServiceConnection? = null
@@ -181,32 +195,76 @@ class SSConfNetworkTest {
             val bridge = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                     service = (binder as BimeronVpnService.ResolverBinder).service()
-                    connected.countDown()
                     if (deliver) connection.onServiceConnected(name, binder)
+                    connected.countDown()
                 }
                 override fun onServiceDisconnected(name: ComponentName) = connection.onServiceDisconnected(name)
             }
             forwarded = bridge
-            return super.bindService(intent, bridge, flags).also { bound = it }
+            return super.bindService(intent, bridge, flags).also {
+                if (it && returnAfterConnection) check(connected.await(5, TimeUnit.SECONDS)) { "Connection not delivered" }
+                release?.let { gate -> check(gate.await(5, TimeUnit.SECONDS)) { "Bind return not released" } }
+                bound = it
+                bindReturned.countDown()
+            }
         }
         override fun unbindService(connection: ServiceConnection) {
             super.unbindService(checkNotNull(forwarded))
             bound = false
+            unbinds.incrementAndGet()
         }
     }
 
+    private suspend fun countingCapture(tracked: TrackingContext, captures: AtomicInteger, block: () -> Unit) =
+        withSSConfNetworkCapture(tracked, { service ->
+            captures.incrementAndGet()
+            SSConfNetworkLease.capture(service)
+        }) { block() }
+
     @Test fun bindingAcquisitionCancellationUnbindsBeforeCapture() = SSConfConsentFixture.withConsent(context, true) {
         runBlocking {
-            val tracked = TrackingContext(context, deliver = false)
+            // Connection first, then bindService returns: the order that made CI read bound too early.
+            val tracked = TrackingContext(context, deliver = false, returnAfterConnection = true)
             val baseline = SSConfNetworkLease.observerCount
+            val captures = AtomicInteger()
             val worker = launch(Dispatchers.Default) {
-                withSSConfNetwork(tracked) { fail("Binding not delivered") }
+                countingCapture(tracked, captures) { fail("Binding not delivered") }
             }
             try {
                 assertTrue(tracked.connected.await(5, TimeUnit.SECONDS))
+                assertTrue("bindService must return on the worker", tracked.bindReturned.await(5, TimeUnit.SECONDS))
                 assertTrue(tracked.bound)
             } finally { worker.cancelAndJoin() }
+            assertEquals(0, captures.get())
             assertFalse(tracked.bound)
+            assertEquals(1, tracked.unbinds.get())
+            assertEquals(baseline, SSConfNetworkLease.observerCount)
+            awaitDestroyed(checkNotNull(tracked.service))
+        }
+    }
+
+    @Test fun cancellationAfterConnectionBeforeBindReturnsNeverCaptures() = SSConfConsentFixture.withConsent(context, true) {
+        runBlocking {
+            val release = CountDownLatch(1)
+            val tracked = TrackingContext(context, release = release)
+            val baseline = SSConfNetworkLease.observerCount
+            val captures = AtomicInteger()
+            val worker = launch(Dispatchers.Default) {
+                countingCapture(tracked, captures) { fail("Cancelled acquisition must not enter block") }
+            }
+            try {
+                // The lease's own connection has completed while its worker is still inside bindService.
+                assertTrue(tracked.connected.await(5, TimeUnit.SECONDS))
+                assertEquals(1L, tracked.bindReturned.count)
+                worker.cancel()
+            } finally {
+                release.countDown()
+                worker.cancelAndJoin()
+            }
+            assertEquals(0L, tracked.bindReturned.count)
+            assertEquals("Cancelled acquisition must not capture", 0, captures.get())
+            assertFalse(tracked.bound)
+            assertEquals(1, tracked.unbinds.get())
             assertEquals(baseline, SSConfNetworkLease.observerCount)
             awaitDestroyed(checkNotNull(tracked.service))
         }
