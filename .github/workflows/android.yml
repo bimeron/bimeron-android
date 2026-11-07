@@ -24,6 +24,7 @@ jobs:
           python3 scripts/test_verify_core_aar.py
           python3 scripts/test_native_alignment.py
           python3 scripts/test_connected_test_runner.py
+          python3 scripts/test_rebuild_core_aar.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

@@ -1,47 +1,56 @@
 # Embedded Android core
 
 Source: https://github.com/bimeron/bimeron-core
-Revision: core master `8fad07ce3d02c00d265897c894f716175b369da4` (the merge of core
-PR #104).
+Revision: core master `d9fd7f40d618a52893d1f30d1f73a962ab28fed0` (the merge of core
+PR #108).
 
-Changes relative to the previously pinned revision `61fa8a0` (core PR #100), by core
+Changes relative to the previously pinned revision `8fad07c` (core PR #104), by core
 pull request:
 
-- #102: macOS stop cancellation during network setup. macOS-only code, not compiled
-  for Android.
-- #103: native IKEv2 integration. Android still rejects IKEv2; the capabilities
-  JSON `ikev2` object gains `auth_*` fields, and the app reads only `supported`.
-- #106: structured configuration and connection errors with a shared catalog. Adds
-  `Androidcore.errorCatalog()`. Every `Status.LastError` is a catalog code, and an
-  unclassified failure is `connection_failed`.
-- #104: opt-in SSH accept-new host keys (ADR 0035) and the Android profile-files-only
-  guard (ADR 0036).
+- #107: build only. `scripts/build-android.sh` passes
+  `-ffile-prefix-map=$ANDROID_NDK_HOME=/android-ndk` to cgo, so the NDK install path
+  is no longer embedded in the native debug info. No Go source or API change.
+- #108: test only. Adds `androidcore/validation_leak_test.go`, which is not linked
+  into the AAR; a build of `aefaff4` (#107) through the same canonical path is
+  byte-identical to this artifact.
 
 SHA-256 of `app/libs/bimeron-core.aar`:
 
 ```text
-3b30cbc58c6d73af48c4e80daddb791a39825cf185c4bb6a11b3052454da2aa9
+e14a164977e5ef94566ab9671d6d08cb21282cf5a24271ad987f165a6cc90607
 ```
 
 Build requirements: Go 1.26.9, Android Studio OpenJDK 21.0.3 (runtime/VM build `21.0.3+-79915917-b509.11`), Android SDK 34, NDK 27.1.12297006, and gomobile `v0.0.0-20261011034528-197770444867`.
 
 ## Rebuilding
 
-**The recorded hash is reproducible only from one absolute source path.** The helper
-already passes `-trimpath`, but the absolute source path (and the NDK path) still end
-up in the native binaries, so the archive must be extracted to exactly
-`/Users/wrk/dev/solarcadence/bimeron/bimeron-artifacts/core-aar-master-8fad07c/source`
-with NDK 27.1.12297006. Any other location builds a working AAR with a different
-hash. Removing the paths is a separate follow-up.
+The archive can be extracted anywhere. gomobile writes absolute `replace`
+directives for the core module and its three `third_party` forks into its generated
+`go.mod`, and Go records them in the `libgojni.so` build info; `-trimpath` does not
+remove them. The rebuild helper therefore always builds through the fixed symlink
+`/var/tmp/bimeron-core-src` (pointing at the extracted source), with both the working
+directory and `PWD` set to it; without `PWD`, `sh` resolves the symlink and the
+physical path is recorded again.
 
-Archive the pinned revision into that empty directory (do not overlay an existing
+**`/var/tmp/bimeron-core-src` is part of the embedded build layout.** It appears in
+every `libgojni.so` (the four `replace` paths), so the recorded hash is reproducible
+only through exactly this path. It must not change; a different path builds a working
+AAR with a different hash.
+
+The helper creates the symlink and removes it in a `finally` block, but only if it
+is still the symlink it created. If `/var/tmp/bimeron-core-src` already exists in any
+form (a real directory, or a symlink left by a crashed or still-running rebuild), the
+helper stops without touching it. Check that no rebuild is running, then remove a
+stale symlink with `rm /var/tmp/bimeron-core-src`.
+
+Archive the pinned revision into an empty directory (do not overlay an existing
 checkout), then run the rebuild helper from this repository. It builds the AAR twice
 and fails unless both builds are byte-identical:
 
 ```sh
-REV=8fad07ce3d02c00d265897c894f716175b369da4
+REV=d9fd7f40d618a52893d1f30d1f73a962ab28fed0
 CORE_SOURCE=/path/to/bimeron-core            # any clone containing $REV
-BASE=/Users/wrk/dev/solarcadence/bimeron/bimeron-artifacts/core-aar-master-8fad07c
+BASE=/path/to/empty/work/dir                 # any location
 git -C "$CORE_SOURCE" cat-file -e "$REV^{commit}"
 mkdir "$BASE" "$BASE/source"                 # both must not exist yet
 git -C "$CORE_SOURCE" archive "$REV" | tar -x -C "$BASE/source"
@@ -65,8 +74,21 @@ CORE_SOURCE="$WORK/repo"
 The helper sets `GOTOOLCHAIN=local`, `GOMAXPROCS=2`, `GOFLAGS='-trimpath -p=2'`
 and `CGO_LDFLAGS='-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'`,
 with no version override. The core builds all four ABIs with `-androidapi=23`.
-As stated above, absolute source and NDK paths remain in the native binaries
-despite `-trimpath`; cross-host reproducibility is not established.
+`scripts/test_rebuild_core_aar.py` checks the symlink handling and the
+working-directory/`PWD` wiring without a real build.
+
+Location independence was checked on one macOS host. Archives of `aefaff4` were
+extracted to `bimeron-artifacts/aar-canonical/src-a/source` and
+`bimeron-artifacts/aar-canonical/deeper/path/src-b/source`, and an archive of
+`d9fd7f4` to `bimeron-artifacts/aar-canonical/other/src-c/source`. All six helper
+builds (two per directory, each directory with its own empty Go build cache) produced
+the hash above, with identical `classes.jar` and `libgojni.so` payloads. `strings` on each
+`libgojni.so` finds no `/Users/` path and no NDK install path; the only source path
+is `/var/tmp/bimeron-core-src` (the core module and `third_party/apernet-quic-go`,
+`third_party/hysteria-core` and `third_party/quic-go`), and NDK headers appear as
+`/android-ndk/toolchains/llvm/prebuilt/darwin-x86_64/...`. That NDK prebuilt
+directory name is host-specific, so cross-host reproducibility (for example a Linux
+build) is still not established.
 
 ## Contents and API
 
@@ -80,10 +102,10 @@ Payload SHA-256 values:
 
 ```text
 cf01e16e0aaae15c7036d46aff0f360f623ab0543e4c4e47389eb2cf78614395  classes.jar
-487bea8fb7c5c56cd8a31cf69b4b1803bf56f89b07c3dfcedd943f4470d0bcaa  jni/armeabi-v7a/libgojni.so
-b40be2d41bb4fe9d646183964237d828b914ef812122505f798c4b7fa588d534  jni/arm64-v8a/libgojni.so
-7bfc0b71d6cf28e3965656d4b54c049f5670a0015053e19f286848d52df4f041  jni/x86/libgojni.so
-ba4e9293173fc68ef61c1e112e8008357ad26ea541f7221d9f79a3e37f0130b2  jni/x86_64/libgojni.so
+caff96bd4eb7622bcc7407d960923b4bac33e2407dcb73204f17dd8a0f6f805d  jni/armeabi-v7a/libgojni.so
+1adc8f4804c3dfa4cbac1cc8b982cc5921d594d4fb287931bf290a6437328878  jni/arm64-v8a/libgojni.so
+db34520432c564e1af5064fbac592c70b73f0423be41b156c9ea701b03324aa3  jni/x86/libgojni.so
+236a356e2a2f5e7f38b93a8b3e2ae86c641afc8c5eb048245e023fc65ad0c9a8  jni/x86_64/libgojni.so
 ```
 
 All four ABIs pass `scripts/native_alignment.py`: PT_LOAD 16 KiB
@@ -92,9 +114,16 @@ segment ends on a 16 KiB boundary). The debug APK's four `lib/*/libgojni.so`
 entries equal the AAR payloads and pass `native_alignment.py` and build-tools 35
 `zipalign -c -P 16 4`.
 
-Compared with the previous artifact (core `61fa8a0`, AAR SHA-256
-`d95e9aa7631d31985e76534bf94aa364e5554257cdc582250ca703ae99372535`), the public
-API (`javap -public -s`) is purely additive: every previous public declaration and
+Compared with the previous artifact (core `8fad07c`, AAR SHA-256
+`3b30cbc58c6d73af48c4e80daddb791a39825cf185c4bb6a11b3052454da2aa9`), `classes.jar`
+is byte-identical, so the public API (`javap -public -s`) is unchanged. The four
+`libgojni.so` files differ: the embedded source and NDK paths are now shorter, which
+shrinks `.go.buildinfo` and `.rodata` and moves data addresses. `.text` and
+`.gopclntab` keep their sizes, and `.gopclntab` is byte-identical.
+
+The API introduced at `8fad07c`, compared with core `61fa8a0` (AAR SHA-256
+`d95e9aa7631d31985e76534bf94aa364e5554257cdc582250ca703ae99372535`), is purely
+additive: every previous public declaration and
 descriptor is unchanged, public types stay at 13, and there are two additions:
 
 ```text
