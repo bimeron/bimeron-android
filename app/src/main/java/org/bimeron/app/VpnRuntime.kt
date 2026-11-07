@@ -8,6 +8,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
@@ -567,6 +568,25 @@ internal fun mayNeedInteractiveAuth(input: SessionInput?): Boolean {
     }
 }
 
+private val KILL_SWITCH_ON = Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$")
+
+/**
+ * The UI's start rule (MainActivity, AppModel): Android runs only `Mode = vpn` without the Core kill switch.
+ * Legacy profiles outside it can still be loaded, so a recovery start checks it as well.
+ */
+internal fun runsOnAndroid(input: SessionInput?): Boolean {
+    if (input == null) return false
+    return try {
+        val profile = Conf.parse(Conf.read(input.bytes))
+        profile.mode == "vpn" && !KILL_SWITCH_ON.containsMatchIn(profile.text)
+    } catch (_: Exception) {
+        false
+    }
+}
+
+/** A recovery start proceeds only for a profile that is non-interactive and runs on Android. */
+internal fun mustSkipRecovery(input: SessionInput?): Boolean = mayNeedInteractiveAuth(input) || !runsOnAndroid(input)
+
 /** Go `unicode.IsSpace`, which `strings.TrimSpace` uses: Unicode White_Space, including U+0085. */
 private fun Char.isGoSpace(): Boolean = this in '\u0009'..'\u000d' || this == ' ' || this == '\u0085' || this == '\u00a0' ||
     this == '\u1680' || this in '\u2000'..'\u200a' || this == '\u2028' || this == '\u2029' || this == '\u202f' ||
@@ -621,6 +641,14 @@ internal sealed interface StartPlan {
     data object Destroyed : StartPlan
 }
 
+/**
+ * The profile an always-on start (`VpnService.SERVICE_INTERFACE`, sent by Android on boot, user unlock,
+ * package update or when always-on is turned on) connects: the interrupted session's recovery id, else
+ * the profile the user last selected. Anything that is not a profile UUID is ignored; null means no target.
+ */
+internal fun alwaysOnTarget(recoveryId: String?, selectedId: String?): String? =
+    sequenceOf(recoveryId, selectedId).firstOrNull { it != null && runCatching { UUID.fromString(it) }.isSuccess }
+
 /** Called for every accepted start: a user start retires a pending "Tap to reconnect" notification. */
 internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {
     if (!recovery) port.cancelNotification()
@@ -639,7 +667,7 @@ internal suspend fun planStart(
     id: String,
     token: Long,
     port: RecoveryStartPort,
-    classify: (SessionInput?) -> Boolean = ::mayNeedInteractiveAuth,
+    classify: (SessionInput?) -> Boolean = ::mustSkipRecovery,
     classifier: CoroutineContext = Dispatchers.Default,
 ): StartPlan {
     if (!recovery) return StartPlan.Proceed(null)

@@ -8,6 +8,7 @@
     <string name="journal_recovery_save_failed">Не удалось сохранить состояние восстановления VPN</string>
     <string name="journal_recovery_needs_user">VPN не восстановлен автоматически: профилю может потребоваться вход</string>
     <string name="journal_recovery_ssconf_unavailable">VPN не восстановлен автоматически: нет пригодной сохранённой конфигурации ssconf</string>
+    <string name="journal_always_on_no_profile">Постоянный VPN не запущен: нет профиля для подключения</string>
     <string name="journal_vpn_connecting">Подключение VPN начато</string>
     <string name="journal_vpn_connected">VPN подключён</string>
     <string name="journal_vpn_reconnecting">VPN переподключается</string>
