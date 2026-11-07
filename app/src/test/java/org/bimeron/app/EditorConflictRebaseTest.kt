@@ -394,6 +394,76 @@ class EditorConflictRebaseTest {
         assertEquals("new-key", File(ConfigDocument.parse(stored(id).text).value("AccessKey", "IdentityFile")).readText())
     }
 
+    /** Another editor saves a new IdentityFile [content] for [id]; returns the saved generation's path. */
+    private suspend fun Fixture.replaceKeyElsewhere(id: String, content: String): String {
+        val other = EditorDraft(stored(id).profile, stored(id).revision)
+        assertTrue(other.importKey(SshProfileResources.Kind.IDENTITY, resources.stage(SshProfileResources.Kind.IDENTITY, content.byteInputStream())))
+        assertTrue(store.compareAndSave(UUID.randomUUID(), UUID.fromString(id), stored(id).revision, other.source.text, other.resources) is CommitResult.Committed)
+        other.resources.dispose(resources)
+        return ConfigDocument.parse(stored(id).text).value("AccessKey", "IdentityFile").also { assertEquals(content, File(it).readText()) }
+    }
+
+    /**
+     * Opens a draft of an SSH profile without a saved key, lets theirs save key generation G2 and rebases
+     * the draft onto it ([reload] or a conflict-free merge). Only the rebase pins G2: the draft's opening
+     * base never referenced it. Returns the draft and G2's path.
+     */
+    private suspend fun Fixture.draftRebasedOntoTheirsKey(id: String, reload: Boolean): Pair<EditorDraft, String> {
+        val draft = open(id)
+        assertEquals("", draft.document.value("AccessKey", "IdentityFile"))
+        val g2 = replaceKeyElsewhere(id, "theirs-key")
+        draft.set("Profile", "Name", "Mine")
+        save(draft).join()
+        assertTrue(changed(draft).merge.conflicts.isEmpty())
+        if (reload) { model.reloadLatest().join(); draft.set("Profile", "Name", "Mine") }
+        else assertEquals(EditorDraft.MergeOutcome.APPLIED, draft.applyMerge(emptyMap()))
+        assertEquals(stored(id).revision, draft.baseRevision)
+        assertEquals(g2, draft.document.value("AccessKey", "IdentityFile"))
+        return draft to g2
+    }
+
+    private suspend fun Fixture.saveAsNewKeepsTheirsKey(draft: EditorDraft, g2: String) {
+        model.saveAsNew("saved as new") { done++ }.join()
+        assertEquals("save-as-new error: ${model.error.value}", 1, done)
+        val created = store.load().first.single { it.id != draft.profile.id }
+        assertEquals("theirs-key", File(ConfigDocument.parse(created.text).value("AccessKey", "IdentityFile")).readText())
+        model.editorDraft = null; draft.resources.dispose(resources)
+        assertFalse("G2 goes once the rebased draft releases it", File(g2).exists())
+    }
+
+    @Test fun saveAsNewAfterARebaseKeepsTheRebasedKeyWhenTheirsThenDeletes() = scenario {
+        val id = create(ssh)
+        val (draft, g2) = draftRebasedOntoTheirsKey(id, reload = false)
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(id), stored(id).revision) is CommitResult.Committed)
+        assertTrue("the rebased draft pins G2", File(g2).exists())
+        save(draft).join()
+        assertEquals(EditorConflict.Gone(deleted = true), draft.conflict)
+        saveAsNewKeepsTheirsKey(draft, g2)
+    }
+
+    @Test fun saveAsNewAfterAReloadKeepsTheReloadedKeyWhenTheirsThenDeletes() = scenario {
+        val id = create(ssh)
+        val (draft, g2) = draftRebasedOntoTheirsKey(id, reload = true)
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), UUID.fromString(id), stored(id).revision) is CommitResult.Committed)
+        assertTrue("the reloaded draft pins G2", File(g2).exists())
+        save(draft).join()
+        assertEquals(EditorConflict.Gone(deleted = true), draft.conflict)
+        saveAsNewKeepsTheirsKey(draft, g2)
+    }
+
+    @Test fun saveAsNewAfterARebaseKeepsTheRebasedKeyWhenTheirsReplacesIt() = scenario {
+        val id = create(ssh)
+        val (draft, g2) = draftRebasedOntoTheirsKey(id, reload = false)
+        val g3 = replaceKeyElsewhere(id, "newer-key")
+        assertNotEquals(g2, g3)
+        assertTrue("the rebased draft pins G2", File(g2).exists())
+        save(draft).join()
+        assertNotNull(draft.conflict as? EditorConflict.Changed)
+        saveAsNewKeepsTheirsKey(draft, g2)
+        assertEquals(g3, ConfigDocument.parse(stored(id).text).value("AccessKey", "IdentityFile"))
+        assertEquals("newer-key", File(g3).readText())
+    }
+
     @Test fun invalidMergeIsNotApplied() = scenario {
         val id = create(ss("A"))
         val draft = open(id)
