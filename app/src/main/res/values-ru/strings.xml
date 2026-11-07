@@ -77,7 +77,7 @@
     <string name="switch_profile_title">Переподключить VPN?</string>
     <string name="switch_profile_message">Для выбора профиля «%1$s» нужно прервать текущее подключение.</string>
     <string name="switch_profile_action">Переподключить</string>
-    <string name="delete_active_warning">Активное подключение будет остановлено.</string>
+    <string name="delete_active_warning">VPN-подключение этого профиля будет остановлено.</string>
     <string name="selected">Выбран</string>
     <string name="expand">Раскрыть</string>
     <string name="collapse">Свернуть</string>

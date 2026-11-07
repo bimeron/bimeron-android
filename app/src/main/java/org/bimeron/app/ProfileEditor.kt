@@ -338,12 +338,12 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     }
     if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text(stringResource(R.string.editor_discard_title)) }, text = { Text(stringResource(R.string.editor_discard_message)) },
         confirmButton = { TextButton(onClick = { leave() }) { Text(stringResource(R.string.editor_discard)) } }, dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.editor_continue_editing)) } })
-    if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text(stringResource(R.string.delete_confirm)) }, text = { if (vpn.activeProfileId == profile.id) Text(stringResource(R.string.delete_active_warning)) },
+    if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text(stringResource(R.string.delete_confirm)) }, text = { if (deleteStopsVpn(vpn, profile.id)) Text(stringResource(R.string.delete_active_warning)) },
         confirmButton = { TextButton(onClick = { delete = false; model.delete(profile.id) { leave() } }) { Text(stringResource(R.string.delete)) } }, dismissButton = { TextButton(onClick = { delete = false }) { Text(stringResource(R.string.cancel)) } })
     draft.conflict?.let { conflict ->
         // Operation failures use the same protected-profile wording as the editor's message line.
         val failure = saveError?.takeIf { it !in conflictMessages }?.let { if (protected) stringResource(R.string.protocol_form_failed) else it }
-        EditorConflictDialog(model, draft, conflict, locked, failure, vpn.activeProfileId == profile.id) { leave() }
+        EditorConflictDialog(model, draft, conflict, locked, failure, deleteStopsVpn(vpn, profile.id)) { leave() }
     }
 }
 

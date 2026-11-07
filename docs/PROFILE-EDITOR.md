@@ -49,7 +49,7 @@ When a save from the editor conflicts and the draft is still shown unchanged, `A
 
 While the panel is open, the editor's message line does not repeat the conflict message.
 
-**Delete conflicts.** A delete from the editor whose base is stale gets no rebase panel. If the profile changed, a dialog asks "Profile was changed — Delete anyway / Cancel". Delete anyway re-reads the latest revision (`readLatest`) and compare-and-deletes against it, stopping the profile's active VPN first as every delete does. If the profile changes again in between, the dialog appears again. A profile already deleted elsewhere counts as deleted: the editor closes. An unreadable profile keeps the conflict message.
+**Delete conflicts.** A delete from the editor whose base is stale gets no rebase panel. If the profile changed, a dialog asks "Profile was changed — Delete anyway / Cancel". Delete anyway re-reads the latest revision (`readLatest`) and compare-and-deletes against it, stopping the VPN first as every delete does when the profile is connected or a connection attempt is for it (`deleteStopsVpn`, which also decides when both delete confirmations warn that the connection will be stopped). If the profile changes again in between, the dialog appears again. A profile already deleted elsewhere counts as deleted: the editor closes. An unreadable profile keeps the conflict message.
 
 The conflict is held by the draft (`EditorDraft.conflict`), so closing or replacing the editor drops it. A rebase, reload or save-as-new result that arrives after the draft was replaced or edited is dropped, like other editor results.
 
