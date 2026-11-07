@@ -29,6 +29,7 @@ class AppModelReceiptRecoveryTest {
                     val result = store.compareAndSave(request, id, null, text, null)
                     if (result is CommitResult.Conflict) throw ProfileError(result.reason.name)
                 }) { publish(profile) }
+                false
             })
         try {
             model.refresh().join()

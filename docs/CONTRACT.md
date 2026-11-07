@@ -61,6 +61,9 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
     draft's import placeholders, before the store lock, and refuses with the fixed `ssh_files_not_imported`
     message. The SSH form marks such typed paths at the field. Profiles stored earlier with outside paths
     still load and open; they fail to save until the files are imported, and fail to connect as above.
+    Creating a profile from outside text (import, link, added key) first clears file fields the new profile
+    does not own and tells the user to import the files in the editor; `ssh://` links with file parameters
+    are refused, never rewritten.
 - Trusted keys fail closed. If the store cannot be read (I/O error, symlink, oversized, or any line that is not
   a valid offer line) the attempt fails with `TRUSTED_KEYS_UNREADABLE` before any native session; it never opts
   in with no keys, which would offer a changed key as a new server. If Core rejects the bytes the attempt fails

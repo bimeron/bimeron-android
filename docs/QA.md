@@ -382,4 +382,6 @@ imported known_hosts unless a step says otherwise, and compare fingerprints with
     buttons." and nothing is saved; typing such a path in the form's key path field shows the field error.
     A profile stored with such a path before this check (write it with `adb shell run-as`) still opens, fails
     to save until the files are imported, and connecting it fails with `SSH_FILE_OUTSIDE_APP` with nothing
-    dialed.
+    dialed. Export an SSH profile with imported files and import the `.conf`: a new profile is created with
+    empty key paths and the "Import the SSH key and known_hosts in the profile editor" notice. Adding the key
+    `ssh://u@host:22?identity=/sdcard/id` is refused with the link message.

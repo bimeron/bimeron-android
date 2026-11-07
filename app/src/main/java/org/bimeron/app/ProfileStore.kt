@@ -632,6 +632,11 @@ class ProfileStore internal constructor(
      * every reference) for an untrusted root.
      */
     private val sshFilesRoot: File? = trustedRoot ?: if (context == null) directory.absoluteFile.parentFile else null
+    /**
+     * Outside text (import, link, added key) prepared for creating profile [id] before its [compareAndSave]:
+     * SSH file fields that are not [id]'s imports are cleared ([SshFileGuard.forNewProfile]). Pure.
+     */
+    internal fun prepareNewProfile(text: String, id: UUID): SshFileGuard.NewProfileText = SshFileGuard.forNewProfile(text, id, sshFilesRoot)
     private fun validateCore(text: String) {
         coreValidation?.let { it(text); return }
         try {

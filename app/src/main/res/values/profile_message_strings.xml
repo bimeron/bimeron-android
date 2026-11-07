@@ -48,4 +48,6 @@
     <string name="profile_imported">Profile imported</string>
     <string name="ssh_error_prepare_files">Could not prepare SSH files</string>
     <string name="ssh_files_not_imported">SSH key and known_hosts files must be imported into this profile. Use the import buttons.</string>
+    <string name="profile_imported_ssh_files_cleared">Profile imported. Import the SSH key and known_hosts in the profile editor.</string>
+    <string name="ssh_import_uri_files">SSH links that refer to key or known_hosts files cannot be imported. Remove the identity and known_hosts parameters from the link.</string>
 </resources>

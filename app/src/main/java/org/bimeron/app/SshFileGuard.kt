@@ -49,6 +49,37 @@ internal object SshFileGuard {
         return references.all { (kind, path) -> owned(profile, kind, path) }
     }
 
+    /** [text] for a new profile, and whether SSH file fields were cleared from it. */
+    class NewProfileText(val text: String, val filesCleared: Boolean)
+
+    /**
+     * Prepares outside text (an imported `.conf`, a link, an added key) for creating profile [id]: the
+     * `[AccessKey]` `IdentityFile`/`KnownHostsFile` values that are not [id]'s imported files under
+     * [filesRoot] (for a new profile, every nonempty one) are cleared, so the profile can be saved and
+     * the files imported in the editor. An `ssh://` value with `identity`/`known_hosts` query parameters
+     * (or a malformed query) is refused with `ssh_import_uri_files`; URIs are never rewritten. Text that
+     * cannot be parsed is returned unchanged for the store's validation to report. The store check
+     * ([insideApp]) stays strict.
+     */
+    fun forNewProfile(text: String, id: UUID, filesRoot: File?): NewProfileText {
+        var document = runCatching { ConfigDocument.parse(text) }.getOrElse { return NewProfileText(text, false) }
+        val access = document.values("AccessKey")
+        access.values.map(::coreTrim).filter { it.startsWith("ssh://", ignoreCase = true) }.forEach { uri ->
+            if (queryReferences(uri)?.isEmpty() != true) throw ProfileError(R.string.ssh_import_uri_files)
+        }
+        val profile = filesRoot?.let { File(it, "ssh-resources/profiles/$id") }
+        var cleared = false
+        access.forEach { (key, raw) ->
+            val kind = FIELDS.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value ?: return@forEach
+            val value = coreTrim(raw)
+            if (value.isNotEmpty() && (profile == null || !owned(profile, kind, value))) {
+                document = document.set("AccessKey", key, "")
+                cleared = true
+            }
+        }
+        return if (cleared) NewProfileText(document.render(), true) else NewProfileText(text, false)
+    }
+
     private fun owned(profile: File, kind: SshProfileResources.Kind, path: String): Boolean {
         val file = File(path)
         if (!file.isAbsolute || file.toPath().normalize().toString() != path || file.name != kind.filename) return false

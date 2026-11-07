@@ -96,6 +96,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
     val warning = coordinator.warning
     val error = coordinator.error
+    val notice = coordinator.notice
     val busy = coordinator.busy
     val expanded = MutableStateFlow(false)
     var pendingPermissionId: String? = null
@@ -125,6 +126,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     /** Deletes the open draft's profile at its latest revision after the user confirmed a delete conflict. */
     fun deleteAnyway(done: () -> Unit) = coordinator.deleteAnyway(done)
     fun clearError() = coordinator.clearError()
+    fun clearNotice() = coordinator.clearNotice()
 
 
     fun toggleExpanded() { expanded.value = !expanded.value }
@@ -150,7 +152,8 @@ internal class AppModelOperations(
     private val stop: () -> Unit,
     private val log: (String) -> Unit,
     private val saveDraft: (suspend (String, String?, Any?) -> Profile)? = null,
-    private val saveCommitted: (suspend (String, String?, Any?, suspend (Profile) -> Unit) -> Unit)? = null,
+    // Returns true when SSH file fields were cleared from a new profile's text (see EditorCommits.save).
+    private val saveCommitted: (suspend (String, String?, Any?, suspend (Profile) -> Unit) -> Boolean)? = null,
     private val deleteCommitted: (suspend (String, Any?, suspend () -> Unit) -> Unit)? = null,
     // Cheap delete precondition run before stopping the VPN; the commit itself stays authoritative.
     private val checkDelete: (String, Any?) -> Unit = { _, _ -> },
@@ -186,6 +189,8 @@ internal class AppModelOperations(
     val loading = MutableStateFlow(true)
     val warning = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
+    /** An informational message after a successful operation, shown until dismissed. */
+    val notice = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     private var initialSelectionLoaded = false
     private val operations = Mutex()
@@ -348,8 +353,9 @@ internal class AppModelOperations(
                 if (id != null && profiles.value.none { it.id == id })
                     throw ProfileError(if (editorBound) R.string.profile_deleted_elsewhere else R.string.profile_no_longer_exists)
                 val publish = published(id, event, configurationChanged, { !editorBound || current() }, done)
-                if (saveCommitted != null) saveCommitted.invoke(text, id, draft, publish)
-                else publish(saveDraft?.invoke(text, id, draft) ?: saveProfile(text, id))
+                val filesCleared = if (saveCommitted != null) saveCommitted.invoke(text, id, draft, publish)
+                else { publish(saveDraft?.invoke(text, id, draft) ?: saveProfile(text, id)); false }
+                if (filesCleared) notice.value = resource(R.string.profile_imported_ssh_files_cleared)
             } catch (e: ProfileError) {
                 if (!editorBound || current()) error.value = e.text(strings)
                 journal(resource(R.string.journal_profile_save_error), LogLevel.ERROR)
@@ -564,6 +570,7 @@ internal class AppModelOperations(
     }
 
     fun clearError() { error.value = null }
+    fun clearNotice() { notice.value = null }
 
     /**
      * After a conflict the profile changed through another path (possibly another model instance on the
@@ -642,13 +649,20 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
         return draft.baseRevision ?: throw conflict()
     }
 
-    suspend fun save(text: String, id: String?, draft: EditorDraft?, publish: suspend (Profile) -> Unit) {
+    /**
+     * Saves [text] as profile [id], or creates a new profile when [id] is null. A creation's text comes from
+     * outside (import, link, added key): SSH file fields it cannot own are cleared first
+     * ([ProfileStore.prepareNewProfile]), and the result is true when that happened; always false for an [id].
+     */
+    suspend fun save(text: String, id: String?, draft: EditorDraft?, publish: suspend (Profile) -> Unit): Boolean {
         val expected = id?.let { base(it, draft, text) }
         val resources = if (id != null) draft?.resources else null
         val store = store()
         val uuid = id?.let(UUID::fromString) ?: UUID.randomUUID()
         val requestId = UUID.randomUUID()
-        val normalized = withContext(Dispatchers.IO) { resources?.resolve(text, store.resources) ?: text }
+        val created = if (id == null) store.prepareNewProfile(text, uuid) else null
+        val source = created?.text ?: text
+        val normalized = withContext(Dispatchers.IO) { resources?.resolve(source, store.resources) ?: source }
         val profile = ConfigDocument.parse(normalized).validate().copy(id = uuid.toString())
         publishStoreCommit(store, requestId, operation = {
             val result = store.compareAndSave(requestId, uuid, expected, normalized, resources)
@@ -659,6 +673,7 @@ internal class EditorCommits(private val store: () -> ProfileStore) {
                 publish(profile)
             }
         }
+        return created?.filesCleared == true
     }
 
     /**
