@@ -1,13 +1,17 @@
 # Embedded Android core
 
 Source: https://github.com/bimeron/bimeron-core
-Revision: `61fa8a089a1b1b47df4b996d164b50cd93d0e423` (core PR #100, SSConf
-snapshot API, on top of the #97 auth and #98 SSConf bridge changes).
+Revision: `dbbae2a761f26b997dc39a8d3b34fdeada08a37a` (core branch
+`aar/tofu-on-61fa8a0`). This build is `61fa8a089a1b1b47df4b996d164b50cd93d0e423`
+(core PR #100, SSConf snapshot API) plus only the SSH accept-new host-key commits
+of core PR #104, cherry-picked unchanged as `8f98756` (feat) and `dbbae2a` (docs,
+ADR 0035). `git diff 61fa8a0 dbbae2a` equals the PR #104 diff
+(`git diff 03494c7 e90b4a0`); nothing else from core master is included.
 
 SHA-256 of `app/libs/bimeron-core.aar`:
 
 ```text
-d95e9aa7631d31985e76534bf94aa364e5554257cdc582250ca703ae99372535
+7de886e5119dd867b98ec596ae7f19d347dff0138807662e91d91a9d89bdcc81
 ```
 
 Build requirements: Go 1.26.9, Android Studio OpenJDK 21.0.3 (runtime/VM build `21.0.3+-79915917-b509.11`), Android SDK 34, NDK 27.1.12297006, and gomobile `v0.0.0-20261011034528-197770444867`.
@@ -19,7 +23,7 @@ existing checkout), then run the rebuild helper from this repository. It builds
 the AAR twice and fails unless both builds are byte-identical:
 
 ```sh
-REV=61fa8a089a1b1b47df4b996d164b50cd93d0e423
+REV=dbbae2a761f26b997dc39a8d3b34fdeada08a37a
 CORE_SOURCE=/path/to/bimeron-core            # any clone containing $REV
 WORK=$(mktemp -d)
 git -C "$CORE_SOURCE" cat-file -e "$REV^{commit}"
@@ -59,11 +63,11 @@ checksum in `scripts/verify_core_aar.py` together.
 Payload SHA-256 values:
 
 ```text
-e906e529092a8cff3d71bb5b0c5c19e8cd78e50935981c479ae4ef790f324a8a  classes.jar
-e2860cf61715e2b44aa19530ee2858112616a2c433e781e797df865c14cee078  jni/armeabi-v7a/libgojni.so
-7fa514f3618a2c2d879841916716dc27099f73e750bcfbb7146cc07c1fe3eb0c  jni/arm64-v8a/libgojni.so
-61c4514b780c8a79fa452790f4bddaadb732b356f8d983804e6733649539832f  jni/x86/libgojni.so
-3684347ca16190456fe832b18d4ec7014a667cab9c4f719f78d92bd1962549cd  jni/x86_64/libgojni.so
+edefb1691346db0e4a6818457a27eff61551424372a4aa84cf07242dc313c5f7  classes.jar
+bd1170bd9e99736ba4b3b1eb5bcfce9de50ed439ad59021c70a4722b29f2f407  jni/armeabi-v7a/libgojni.so
+676bb8f1a3bedf472476f3ed72c5dcc241db058bf22c61a28a48380cb694678f  jni/arm64-v8a/libgojni.so
+0aa1d9676cfc1d199f9e26de07c856671eabda82b229393a6434954d55cd0934  jni/x86/libgojni.so
+f288e1bbe25f7a30cfbd642926a66d962ad488c60ad535b78891699a53135de5  jni/x86_64/libgojni.so
 ```
 
 All four ABIs pass `scripts/native_alignment.py`: PT_LOAD 16 KiB
@@ -72,24 +76,27 @@ segment ends on a 16 KiB boundary). The debug APK's four `lib/*/libgojni.so`
 entries equal the AAR payloads and pass `native_alignment.py` and build-tools 35
 `zipalign -c -P 16 4`.
 
-Compared with the previous artifact (core `bd57093`), the public API
-(`javap -public -s`) is purely additive: every previous public declaration and
-descriptor is unchanged, and public types grow from 12 to 13. Additions:
+Compared with the previous artifact (core `61fa8a0`, AAR SHA-256
+`d95e9aa7631d31985e76534bf94aa364e5554257cdc582250ca703ae99372535`), the public
+API (`javap -public -s`) is purely additive: every previous public declaration and
+descriptor is unchanged, public types stay at 13, and there is one addition:
 
 ```text
-Androidcore.newSSConfSnapshot(String, byte[]): SSConfSnapshot throws Exception
-  (Ljava/lang/String;[B)Lorg/bimeron/core/androidcore/SSConfSnapshot;
-Androidcore.newSessionWithSSConfSnapshot(byte[], SSConfSnapshot, byte[], byte[], SocketProtector): Session throws Exception
-  ([BLorg/bimeron/core/androidcore/SSConfSnapshot;[B[BLorg/bimeron/core/androidcore/SocketProtector;)Lorg/bimeron/core/androidcore/Session;
-Session(byte[], SSConfSnapshot, byte[], byte[], SocketProtector) constructor
-final class SSConfSnapshot implements go.Seq$Proxy, constructor (String, byte[])
+Session.acceptNewHostKeys(byte[]): void throws Exception
+  ([B)V
 ```
 
-The SSConf snapshot entry points are packaged but not yet called by the
-application. The earlier auth and SSConf bindings remain present with unchanged
-descriptors: `Session.pendingAuth/replyAuth/cancelAuth`, `SSConfSocketProtector`
-extending `SocketProtector` with `protect/bind`, `Androidcore.newSSConfRequest`,
-and `SSConfRequest.resolve/cancel` plus `SSConfResult.content/metadata`.
+`acceptNewHostKeys` opts a session in to SSH accept-new host keys (core ADR 0035,
+`docs/android-ssh-auth.md`). The application calls it once, before `start`, for
+every SSH-capable profile; see the SSH host keys section of
+[CONTRACT.md](CONTRACT.md). The earlier SSConf snapshot, auth and SSConf bridge
+bindings remain present with unchanged descriptors:
+`Androidcore.newSSConfSnapshot`, `Androidcore.newSessionWithSSConfSnapshot`,
+`Session.pendingAuth/replyAuth/cancelAuth`, `SSConfSocketProtector` extending
+`SocketProtector` with `protect/bind`, `Androidcore.newSSConfRequest`, and
+`SSConfRequest.resolve/cancel` plus `SSConfResult.content/metadata`.
+`app/libs/LICENSE` and `app/libs/THIRD_PARTY_NOTICES.txt` are byte-identical to
+the files produced by this build and did not change.
 
 ## Open verification
 
