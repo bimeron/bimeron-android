@@ -111,6 +111,27 @@ class AppModelOperationsTest {
         assertEquals("b", model.selected.value); assertEquals("a", model.pendingApply.value)
         model.applyPending { starts.add(it) }; assertEquals(listOf("a"), starts)
     }
+    /** Audit L-3: a confirmed switch to a core KillSwitch = true profile stops like a proxy target; it never starts. */
+    @Test fun switchToKillSwitchProfileStopsInsteadOfStarting() = scenario {
+        disk.add(Profile("k", "K", "", "vpn", "[Interface]\nMode = vpn\nKillSwitch = true\n"))
+        ready(); connected()
+        model.requestSelect("k"); assertEquals("k", model.pendingSwitch.value)
+        model.confirmSwitch { starts.add(it) }; model.refresh().join()
+        assertTrue(starts.isEmpty()); assertEquals(1, stops)
+        assertEquals("k", model.selected.value); assertEquals("k", persisted)
+    }
+    @Test fun switchToSupportedProfileStillStarts() = scenario {
+        disk.add(Profile("f", "F", "", "vpn", "[Interface]\nMode = vpn\nKillSwitch = false\n"))
+        ready(); connected()
+        model.requestSelect("f"); model.confirmSwitch { starts.add(it) }; model.refresh().join()
+        assertEquals(listOf("f"), starts); assertEquals(0, stops)
+    }
+    @Test fun systemVpnPredicateMatchesEveryStartPath() {
+        assertTrue(Profile("a", "A", "", "vpn", "[Interface]\nKillSwitch = false\n").startsAsSystemVpn)
+        assertTrue(Profile("a", "A", "", "vpn", "").startsAsSystemVpn)
+        assertFalse(Profile("a", "A", "", "vpn", "[Interface]\n  KillSwitch=true  \n").startsAsSystemVpn)
+        assertFalse(Profile("a", "A", "", "proxy", "").startsAsSystemVpn)
+    }
     @Test fun restartedRuntimeInvalidatesApplyBeforeCollectorRuns() = scenario {
         ready(); connected(); model.save("new", "a", "", true) {}.join()
         assertEquals("a", model.pendingApply.value)
