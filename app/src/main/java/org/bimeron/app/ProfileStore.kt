@@ -608,19 +608,19 @@ class ProfileStore internal constructor(
     } }
     /**
      * Save-time validation of [text] as profile [id]; [compareAndSave] runs it for every save, before [guard].
-     * Import placeholders of [imports] are resolved first, so they are checked as the published generations
-     * they become. Decision 8: every SSH file reference must be one of [id]'s own imported files under the
-     * trusted root ([SshFileGuard.insideApp], the check the service repeats at connect time); a profile with
-     * file references and no [id] is refused. Pure, apart from the resolve and Core validation.
+     * Import placeholders of [imports] (a draft of [id]) are resolved first, so they are checked as the
+     * published generations they become. Decision 8: every SSH file reference must be one of [id]'s own
+     * imported files under the trusted root ([SshFileGuard.insideApp], the check the service repeats at
+     * connect time). Pure, apart from the resolve and Core validation.
      */
-    suspend fun validate(text: String, imports: SshDraftResources? = null, id: UUID? = imports?.profileId): Unit = withContext(Dispatchers.IO) {
+    suspend fun validate(text: String, id: UUID, imports: SshDraftResources? = null): Unit = withContext(Dispatchers.IO) {
         require(imports == null || imports.profileId == id)
         val text = imports?.resolve(text, resources) ?: text
         val normalized = Conf.read(text.toByteArray(StandardCharsets.UTF_8))
         val document = ConfigDocument.parse(normalized)
         document.validate()
         if (document.source()?.first == "File") throw ProfileError(R.string.profile_error_embed_key_file)
-        if (!sshFilesInsideApp(normalized, id)) throw ProfileError(R.string.ssh_files_not_imported)
+        if (!SshFileGuard.insideApp(normalized, id, sshFilesRoot)) throw ProfileError(R.string.ssh_files_not_imported)
         validateCore(normalized)
         document.rules.forEachIndexed { index, rule ->
             if (rule.disabled) validateCore(document.enableRule(index, true).render())
@@ -632,8 +632,6 @@ class ProfileStore internal constructor(
      * every reference) for an untrusted root.
      */
     private val sshFilesRoot: File? = trustedRoot ?: if (context == null) directory.absoluteFile.parentFile else null
-    private fun sshFilesInsideApp(text: String, id: UUID?): Boolean =
-        if (id == null) SshFileGuard.references(text)?.isEmpty() == true else SshFileGuard.insideApp(text, id, sshFilesRoot)
     private fun validateCore(text: String) {
         coreValidation?.let { it(text); return }
         try {
@@ -652,7 +650,7 @@ class ProfileStore internal constructor(
         synchronized(guard) { replay(requestId, request) }?.let { return@withContext it }
         require(draft == null || draft.profileId == id)
         val normalized = draft?.resolve(text, resources) ?: text
-        validate(normalized, id = id)
+        validate(normalized, id)
         val bytes = normalized.toByteArray(StandardCharsets.UTF_8)
         val digest = Sha256.of(bytes)
         val temp = File.createTempFile("profile-", ".tmp", directory)

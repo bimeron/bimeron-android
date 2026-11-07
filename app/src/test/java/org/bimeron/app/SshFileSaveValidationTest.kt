@@ -35,7 +35,7 @@ class SshFileSaveValidationTest {
         runBlocking { store.compareAndSave(UUID.randomUUID(), profile, null, text, draft) }
 
     private fun refused(text: String, label: String, profile: UUID = id) {
-        val validation = runCatching { runBlocking { store.validate(text, id = profile) } }.exceptionOrNull()
+        val validation = runCatching { runBlocking { store.validate(text, profile) } }.exceptionOrNull()
         assertEquals(label, R.string.ssh_files_not_imported, (validation as? ProfileError)?.resId)
         try { save(text, profile); fail("saved: $label") }
         catch (e: ProfileError) { assertEquals(label, R.string.ssh_files_not_imported, e.resId) }
@@ -45,7 +45,7 @@ class SshFileSaveValidationTest {
     @Test fun outsideAndForeignPathsAreRefused() {
         val identity = generation(id, SshProfileResources.Kind.IDENTITY)
         val knownHosts = generation(id, SshProfileResources.Kind.KNOWN_HOSTS)
-        val generationName = File(identity).parentFile.name
+        val generationName = File(identity).parentFile!!.name
         val other = generation(UUID.randomUUID(), SshProfileResources.Kind.IDENTITY)
         val outside = listOf("/sdcard/.ssh/id_rsa", "/storage/emulated/0/Download/id_rsa", "~/.ssh/id_rsa", "~", "keys/id_rsa", "id_rsa",
             "/data/local/tmp/identity", other,
@@ -73,12 +73,6 @@ class SshFileSaveValidationTest {
         refused("[Profile]\nVersion = 1\nName = S\n\n[AccessKey]\nSSH = ssh://u@h:22?identity=/sdcard/id\n", "SSH field")
     }
 
-    @Test fun referencesWithoutAProfileIdAreRefused() = runBlocking {
-        val identity = generation(id, SshProfileResources.Kind.IDENTITY)
-        try { store.validate(typed(identity = identity)); fail() } catch (e: ProfileError) { assertEquals(R.string.ssh_files_not_imported, e.resId) }
-        store.validate(typed())
-    }
-
     @Test fun emptyValuesAndOwnFilesPass() {
         assertTrue(save(typed()) is CommitResult.Committed)
         val emptyValues = ConfigDocument.parse(typed()).set("AccessKey", "IdentityFile", "").set("AccessKey", "KnownHostsFile", "").render()
@@ -100,7 +94,7 @@ class SshFileSaveValidationTest {
         val knownHosts = draft.accept(resources.stage(SshProfileResources.Kind.KNOWN_HOSTS, "hosts".byteInputStream()))!!
         val text = typed(identity, knownHosts)
         // The editor's Validate and Done check the resolved text the same way.
-        runBlocking { store.validate(text, draft) }
+        runBlocking { store.validate(text, id, draft) }
         assertTrue(save(text, id, draft) is CommitResult.Committed)
         val stored = runBlocking { store.load() }.first.single()
         assertTrue(SshFileGuard.insideApp(stored.text, id, root))
@@ -181,8 +175,8 @@ class SshFileSaveValidationTest {
         // A store whose profiles are not beside its SSH imports cannot accept any reference.
         val elsewhere = ProfileStore(null, temp.newFolder("elsewhere"), resources) {}
         val identity = generation(id, SshProfileResources.Kind.IDENTITY)
-        try { runBlocking { elsewhere.validate(typed(identity = identity), id = id) }; fail() }
+        try { runBlocking { elsewhere.validate(typed(identity = identity), id) }; fail() }
         catch (e: ProfileError) { assertEquals(R.string.ssh_files_not_imported, e.resId) }
-        runBlocking { elsewhere.validate(typed(), id = id) }
+        runBlocking { elsewhere.validate(typed(), id) }
     }
 }

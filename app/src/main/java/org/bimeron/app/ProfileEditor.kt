@@ -202,7 +202,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
         fun current() = model.editorDraft === draft && draft.editGeneration == generation
         scope.launch {
             try {
-                model.store.validate(text, draft.resources)
+                model.store.validate(text, draft.resources.profileId, draft.resources)
                 if (!current()) return@launch
                 if (save) model.save(text, profile.id, context.getString(R.string.editor_saved), draft.configurationChanged()) { leave() }
                 else draft.error = context.getString(R.string.editor_validated)
