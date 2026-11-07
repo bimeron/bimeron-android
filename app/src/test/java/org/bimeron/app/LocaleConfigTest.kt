@@ -1,6 +1,8 @@
 package org.bimeron.app
 
 import android.app.Application
+import android.content.res.Configuration
+import android.os.LocaleList
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.util.Locale
@@ -51,6 +53,27 @@ class LocaleConfigTest {
             filterLanguages,
             configLanguages,
         )
+    }
+
+    /**
+     * values/ is the default, unqualified English and values-ru/ is Russian; there are no region-qualified
+     * dirs. So the listed tags (en-US, ru-RU) and any region a user stored with the earlier bare-language
+     * list (for example en-GB or ru-KG picked through the region sub-picker) resolve to the same strings.
+     */
+    @Test fun regionalTagsResolveToLanguageResources() {
+        val english = "No profiles yet"
+        val russian = stringFor("ru")
+        assertNotEquals("values-ru/ must translate profiles_empty", english, russian)
+        for (tag in listOf("en-US", "en-GB", "en")) assertEquals("app locale $tag", english, stringFor(tag))
+        for (tag in listOf("ru-RU", "ru-KG")) assertEquals("app locale $tag", russian, stringFor(tag))
+        // A language without translations falls back to the default, unqualified English resources.
+        assertEquals("app locale de-DE", english, stringFor("de-DE"))
+    }
+
+    private fun stringFor(languageTags: String): String {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val configuration = Configuration(app.resources.configuration).apply { setLocales(LocaleList.forLanguageTags(languageTags)) }
+        return app.createConfigurationContext(configuration).getString(R.string.profiles_empty)
     }
 
     private fun localeConfigTags(): List<String> {
