@@ -9,7 +9,7 @@ import java.util.UUID
  * profile, `<filesRoot>/ssh-resources/profiles/<profile uuid>/<generation uuid>/{identity|known_hosts}`.
  * The service checks every session input before any native session; a typed path such as `/sdcard/...`,
  * a `~` path, another profile's file or the wrong kind of file is refused. Form and save validation belong
- * to the editor; this guard is the enforcement point that every start passes.
+ * to the editor and the profile store; this guard is the enforcement point that every start passes.
  */
 internal object SshFileGuard {
     /**
@@ -33,9 +33,19 @@ internal object SshFileGuard {
 
     /** True when every reference in [input] is one of its own profile's imported files under [filesRoot]. */
     fun insideApp(input: SessionInput, filesRoot: File?): Boolean {
-        val references = runCatching { references(Conf.read(input.bytes)) }.getOrNull() ?: return false
+        val text = runCatching { Conf.read(input.bytes) }.getOrNull() ?: return false
+        return insideApp(text, input.id, filesRoot)
+    }
+
+    /**
+     * True when every reference in [text] (already normalized like stored bytes read by `Conf.read`) is one
+     * of profile [id]'s imported files under [filesRoot]. The service check above delegates here; the
+     * profile store runs the same check at save time.
+     */
+    fun insideApp(text: String, id: UUID, filesRoot: File?): Boolean {
+        val references = references(text) ?: return false
         if (references.isEmpty()) return true
-        val profile = File(filesRoot ?: return false, "ssh-resources/profiles/${input.id}")
+        val profile = File(filesRoot ?: return false, "ssh-resources/profiles/$id")
         return references.all { (kind, path) -> owned(profile, kind, path) }
     }
 

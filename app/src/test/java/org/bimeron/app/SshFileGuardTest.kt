@@ -64,6 +64,24 @@ class SshFileGuardTest {
         refused(input("[Profile]\nVersion = 1\nName = S\n\n[AccessKey]\nSSH = ssh://u@h:22?identity=/sdcard/id\n"), "SSH field")
     }
 
+    /** The text overload (used at save time) and the service's SessionInput check give the same answer for every input. */
+    @Test fun textOverloadMatchesTheSessionInputCheck() {
+        val texts = listOf(typed(identity, knownHosts), typed(), typed(identityFile = "/sdcard/id"), typed(identityFile = knownHosts),
+            typed(knownHostsFile = "$root/ssh-resources/profiles/${UUID.randomUUID()}/$generation/known_hosts"),
+            typed(identityFile = "$root/ssh-resources/profiles/$id/${generation.uppercase()}/identity"),
+            key("ssh://u@h:22?identity=${identity.replace("/", "%2F")}"), key("ssh://u@h:22?identity=/sdcard/id"),
+            key("ssh://u@h:22?known_hosts=%zz"), input("[Broken"), input("\u0000 not a profile ["))
+        for (input in texts) for (filesRoot in listOf(root, null, File("/other/files"))) {
+            val text = Conf.read(input.bytes)
+            assertEquals("$filesRoot: $text", SshFileGuard.insideApp(input, filesRoot), SshFileGuard.insideApp(text, id, filesRoot))
+        }
+        assertTrue(SshFileGuard.insideApp(Conf.read(typed(identity, knownHosts).bytes), id, root))
+        assertFalse("another profile id", SshFileGuard.insideApp(Conf.read(typed(identity).bytes), UUID.randomUUID(), root))
+        assertFalse("no root", SshFileGuard.insideApp(Conf.read(typed(identity).bytes), id, null))
+        assertTrue("no references, no root", SshFileGuard.insideApp(Conf.read(typed().bytes), id, null))
+        assertFalse("malformed", SshFileGuard.insideApp("[Broken", id, root))
+    }
+
     @Test fun noRootOrUnreadableInputFailsClosed() {
         try { requireSshFilesInsideApp(typed(identity), null); fail() } catch (_: BimeronVpnService.SessionFailure) {}
         requireSshFilesInsideApp(typed(), null)
