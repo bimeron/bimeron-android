@@ -5,7 +5,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -19,14 +18,15 @@ class ShadowTlsProfileEditorTest {
     @Test fun unsupportedProfileWithoutWrapperKeepsNetworkFieldsVisible() {
         val text = Conf.fromKey("Network fixture", "socks5://192.0.2.10:1080")
         val profile = Profile("no-shadow", "Network fixture", "socks5", "vpn", text)
-        val model = AppModel(ApplicationProvider.getApplicationContext())
-        model.editorDraft = EditorDraft(profile).also { it.tab = 1 }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            // The activity's own model (contract D5: one production store behind it).
+            val model = scenario.loadedActivityModel()
             var interfaceName = ""
             var shadowTitle = ""
             scenario.onActivity { activity ->
                 interfaceName = activity.getString(R.string.editor_interface_name)
                 shadowTitle = activity.getString(R.string.shadowtls_title)
+                model.editorDraft = EditorDraft(profile).also { it.tab = 1 }
                 activity.setContent { MaterialTheme { ProfileEditor(model, profile, false, null, VpnState()) {} } }
             }
             waitNode { it.text?.toString()?.contains(interfaceName) == true }
@@ -38,18 +38,18 @@ class ShadowTlsProfileEditorTest {
     @Test fun originalAndCurrentWrappersProtectRawAndErrors() {
         for (originalWrapper in listOf(false, true)) {
             val profile = Profile("shadow", "Shadow", "ssh", "vpn", inner + if (originalWrapper) wrapper else "")
-            val model = AppModel(ApplicationProvider.getApplicationContext())
             val draft = EditorDraft(profile).also {
                 it.update(TextFieldValue(inner + if (originalWrapper) "" else wrapper))
                 it.tab = 3
             }
-            model.editorDraft = draft
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val model = scenario.loadedActivityModel()
                 var show = ""
                 var failed = ""
                 scenario.onActivity { activity ->
                     show = activity.getString(R.string.protocol_form_show)
                     failed = activity.getString(R.string.protocol_form_failed)
+                    model.editorDraft = draft
                     activity.setContent { MaterialTheme { ProfileEditor(model, profile, false, "wrapper-secret", VpnState()) {} } }
                 }
                 waitNode { it.text?.toString() == show }
@@ -61,10 +61,9 @@ class ShadowTlsProfileEditorTest {
 
     @Test fun invalidWrapperBlocksDoneAndValidationWithSafeError() {
         val profile = Profile("invalid-shadow", "Shadow", "ssh", "vpn", inner + "[ShadowTLS]\nServerName = invalid name\nPassword = wrapper-secret\n")
-        val model = AppModel(ApplicationProvider.getApplicationContext())
         val draft = EditorDraft(profile).also { it.tab = 3 }
-        model.editorDraft = draft
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            val model = scenario.loadedActivityModel()
             var done = ""
             var validate = ""
             var invalid = ""
@@ -72,6 +71,7 @@ class ShadowTlsProfileEditorTest {
                 done = activity.getString(R.string.editor_done)
                 validate = activity.getString(R.string.editor_validate)
                 invalid = activity.getString(R.string.shadowtls_invalid)
+                model.editorDraft = draft
                 activity.setContent { MaterialTheme { ProfileEditor(model, profile, false, null, VpnState()) { error("Invalid draft left editor") } } }
             }
             for (label in listOf(done, validate)) {
@@ -87,12 +87,12 @@ class ShadowTlsProfileEditorTest {
 
     @Test fun uriUpstreamStillOffersCompatibilityBlock() {
         val profile = Profile("uri-shadow", "Shadow", "ssh", "vpn", "[AccessKey]\nSSH = ssh://user:secret@host:22\n" + wrapper)
-        val model = AppModel(ApplicationProvider.getApplicationContext())
-        model.editorDraft = EditorDraft(profile).also { it.tab = 1 }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            val model = scenario.loadedActivityModel()
             var raw = ""
             scenario.onActivity { activity ->
                 raw = activity.getString(R.string.shadowtls_raw)
+                model.editorDraft = EditorDraft(profile).also { it.tab = 1 }
                 activity.setContent { MaterialTheme { ProfileEditor(model, profile, false, null, VpnState()) {} } }
             }
             click(waitNode { it.text?.toString() == raw })
