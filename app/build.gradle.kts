@@ -89,7 +89,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     // Android 13+ per-app language settings use the hand-written android:localeConfig="@xml/locales_config"
-    // (regional tags, so the picker has no region sub-step). AGP must not generate a second one.
+    // (regional tags en-US, ru-RU). AGP must not generate a second one.
     androidResources { generateLocaleConfig = false }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

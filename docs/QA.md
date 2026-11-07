@@ -195,10 +195,13 @@ home, settings or log is clipped or overflows), `A11yContrastTest` (both themes)
 ### Languages
 
 On Android 13+ (API 35 emulator), Settings → Apps → Bimeron → Language lists
-English (United States) and Russian (Russia) with no region sub-picker; selecting
-each switches the app UI, and `cmd locale get-app-locales` / `set-app-locales`
-report and apply the same value. A region stored earlier (for example `en-GB` or
-`ru-KG`) keeps resolving to the English or Russian resources.
+English and Russian under "All languages" and the system locale (English (United
+States)) and the current app language under "Suggested". Suggested entries apply
+in one tap; a language entry opens the system's region list for that language even
+though `locales_config.xml` names `en-US` and `ru-RU`. Selecting switches the app
+UI, and `cmd locale get-app-locales` / `set-app-locales` report and apply the same
+value. Any region (for example `en-GB` or `ru-KG`, stored earlier) resolves to the
+English or Russian resources.
 `LocaleConfigTest` (JVM) checks that the merged manifest's `android:localeConfig`
 is `@xml/locales_config` and lists exactly `en-US` and `ru-RU`, that its languages
 match the APK locale filters (`resourceConfigurations`), and that regional tags

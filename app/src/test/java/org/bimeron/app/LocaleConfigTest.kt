@@ -20,8 +20,8 @@ import org.xmlpull.v1.XmlPullParser
 
 /**
  * The per-app language list in Android 13+ system settings comes from the manifest's android:localeConfig,
- * the hand-written res/xml/locales_config.xml. It lists regional tags (en-US, ru-RU) so that the system
- * picker offers each language in one step, without a region sub-picker.
+ * the hand-written res/xml/locales_config.xml. It lists regional tags (en-US, ru-RU); the system picker
+ * may still offer other regions of a listed language, which resolve to the same resources.
  *
  * Robolectric does not expose ApplicationInfo's locale-config resource, so the reference is read from the
  * same merged manifest Robolectric loads and resolved through the app's compiled resources.
