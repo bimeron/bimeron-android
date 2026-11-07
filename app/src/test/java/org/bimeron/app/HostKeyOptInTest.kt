@@ -170,6 +170,7 @@ class HostKeyOptInTest {
             "ssh_host_key_rejected" to VpnErrorCode.AUTH_CANCELLED,
             "ssh_host_key_unanswered" to VpnErrorCode.AUTH_UNANSWERED,
             "ssh_host_key_unknown" to VpnErrorCode.SSH_CONNECTION_FAILED,
+            "ssh_host_key_ca_required" to VpnErrorCode.HOST_KEY_CA_REQUIRED,
             "ssh_known_hosts_missing" to VpnErrorCode.SSH_KNOWN_HOSTS_MISSING,
         )
         for ((lastError, code) in expected) for (history in AuthHistory.entries) for (state in listOf("failed", "disconnected", "reconnecting")) {
@@ -178,6 +179,7 @@ class HostKeyOptInTest {
         // The generic SSH fault keeps the history heuristic.
         assertEquals(VpnErrorCode.AUTH_FAILED, coreFailureCode("failed", "ssh_connection_failed", AuthHistory.REPLIED))
         assertEquals(VpnErrorCode.CORE_CONNECT_FAILED, coreFailureCode("failed", "ssh_host_key_other", AuthHistory.NONE))
+        assertEquals(expected, SSH_HOST_KEY_FAULTS)
     }
 
     @Test fun mismatchIsNotReplacedByALateUserCancel() {

@@ -33,7 +33,9 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   positively non-SSH profiles do not opt in. The call is made even with no stored keys, so an unknown host is
   offered. An imported `KnownHostsFile` stays trusted alongside; Core trusts the union. Android sessions use
   only files imported into app storage: no storage permission is declared and no `/sdcard` or `~/.ssh` path is
-  read or passed to Core.
+  read or passed to Core. Core enforces the same for every Android session (core ADR 0036): no default identity
+  scan, no `~/.ssh/known_hosts` fallback, no `~` paths, no SSH agent; without an imported known_hosts and without
+  the opt-in the attempt fails with `ssh_known_hosts_missing` before dialing.
 - If the store cannot be read the session opts in with no keys and journals a fixed WARN. If Core rejects the
   bytes the session starts without the opt-in (known_hosts-only verification) and journals the same WARN.
   Neither path trusts anything silently.
@@ -46,7 +48,8 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
 - The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace, with
   FLAG_SECURE. Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
   `cancelAuth`. Rejections use the existing failed states.
-- Persistence: after Core accepts `["accept"]`, `AuthAttempt` (service side) passes the `knownHostsLine` of the
+- Persistence: a successful `ReplyAuth` is final in Core even if a timeout, Stop or network change follows,
+  so the line is persisted if and only if `ReplyAuth` returned success. After Core accepts `["accept"]`, `AuthAttempt` (service side) passes the `knownHostsLine` of the
   offer it published under the same ids to `ProfileStore.rememberTrustedHostKey`, never UI input. Under the
   store lock the profile must still exist; the line is deduplicated and the file capped at 256 KiB (Core's
   limit). A failure or a full file leaves the session running (Core remembers the key for its reconnects) and
@@ -65,6 +68,7 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   deletes the file immediately; it is not part of Save.
 - `Status.LastError` mapping, ahead of the auth-history heuristic: `ssh_host_key_mismatch` →
   `HOST_KEY_MISMATCH`, `ssh_host_key_rejected` → `AUTH_CANCELLED`, `ssh_host_key_unanswered` →
-  `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_known_hosts_missing` →
-  `SSH_KNOWN_HOSTS_MISSING`. A changed key is never offered and never accepted. Recovery still skips SSH-capable
+  `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_host_key_ca_required` →
+  `HOST_KEY_CA_REQUIRED` (the imported known_hosts uses `@cert-authority`; forgetting app-owned keys does not
+  help, so it has its own message), `ssh_known_hosts_missing` → `SSH_KNOWN_HOSTS_MISSING`. A changed key is never offered and never accepted. Recovery still skips SSH-capable
   profiles.

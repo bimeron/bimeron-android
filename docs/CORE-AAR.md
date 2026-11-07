@@ -1,17 +1,27 @@
 # Embedded Android core
 
 Source: https://github.com/bimeron/bimeron-core
-Revision: `dbbae2a761f26b997dc39a8d3b34fdeada08a37a` (core branch
-`aar/tofu-on-61fa8a0`). This build is `61fa8a089a1b1b47df4b996d164b50cd93d0e423`
-(core PR #100, SSConf snapshot API) plus only the SSH accept-new host-key commits
-of core PR #104, cherry-picked unchanged as `8f98756` (feat) and `dbbae2a` (docs,
-ADR 0035). `git diff 61fa8a0 dbbae2a` equals the PR #104 diff
-(`git diff 03494c7 e90b4a0`); nothing else from core master is included.
+Revision: commit `a93594339eada230c0c63016788697bbcdbb82bb`, reachable through the
+annotated tag `android-aar/tofu-a935943` (preferred; branches may be cleaned up) and
+the branch `aar/tofu-on-61fa8a0`. This build is `61fa8a089a1b1b47df4b996d164b50cd93d0e423`
+(core PR #100, ssconf snapshot API) plus only the four SSH host-key commits of
+core PR #104, cherry-picked unchanged:
+
+```text
+8f98756 feat(ssh): add opt-in accept-new host-key offers
+dbbae2a docs(ssh): document accept-new host-key offers and ADR 0035
+06e259d fix(ssh): harden accept-new verification; Android uses only profile files
+a935943 docs(ssh): document host-key review fixes and ADR 0036
+```
+
+`git diff 61fa8a0 a935943` equals the PR #104 diff (`git diff 03494c7 2a87ffa`);
+nothing else from core master is included. Core PR #104 is still under review; if
+it changes, this AAR is rebuilt and the pins below change with it.
 
 SHA-256 of `app/libs/bimeron-core.aar`:
 
 ```text
-7de886e5119dd867b98ec596ae7f19d347dff0138807662e91d91a9d89bdcc81
+f8fa974b5c95240f911269586dd8803b2344f6e2fa96da85a002c7950f186454
 ```
 
 Build requirements: Go 1.26.9, Android Studio OpenJDK 21.0.3 (runtime/VM build `21.0.3+-79915917-b509.11`), Android SDK 34, NDK 27.1.12297006, and gomobile `v0.0.0-20261011034528-197770444867`.
@@ -23,7 +33,7 @@ existing checkout), then run the rebuild helper from this repository. It builds
 the AAR twice and fails unless both builds are byte-identical:
 
 ```sh
-REV=dbbae2a761f26b997dc39a8d3b34fdeada08a37a
+REV=a93594339eada230c0c63016788697bbcdbb82bb
 CORE_SOURCE=/path/to/bimeron-core            # any clone containing $REV
 WORK=$(mktemp -d)
 git -C "$CORE_SOURCE" cat-file -e "$REV^{commit}"
@@ -41,7 +51,8 @@ If no local clone is available:
 
 ```sh
 git clone --no-checkout https://github.com/bimeron/bimeron-core.git "$WORK/repo"
-git -C "$WORK/repo" fetch origin "$REV"
+git -C "$WORK/repo" fetch origin refs/tags/android-aar/tofu-a935943
+git -C "$WORK/repo" cat-file -e "$REV^{commit}"
 CORE_SOURCE="$WORK/repo"
 ```
 
@@ -63,11 +74,11 @@ checksum in `scripts/verify_core_aar.py` together.
 Payload SHA-256 values:
 
 ```text
-edefb1691346db0e4a6818457a27eff61551424372a4aa84cf07242dc313c5f7  classes.jar
-bd1170bd9e99736ba4b3b1eb5bcfce9de50ed439ad59021c70a4722b29f2f407  jni/armeabi-v7a/libgojni.so
-676bb8f1a3bedf472476f3ed72c5dcc241db058bf22c61a28a48380cb694678f  jni/arm64-v8a/libgojni.so
-0aa1d9676cfc1d199f9e26de07c856671eabda82b229393a6434954d55cd0934  jni/x86/libgojni.so
-f288e1bbe25f7a30cfbd642926a66d962ad488c60ad535b78891699a53135de5  jni/x86_64/libgojni.so
+f4246a884dc17e27234bc4679b04b903c8b6d1a0e9ffc3c54cf925efde297ed1  classes.jar
+f95cab7a1aaecb14f793ee19a7cd8b18edfdc9bf1bf8e37f0fa75bbbfb25cc17  jni/armeabi-v7a/libgojni.so
+130280a575a373e44f541f6a3342977760d6cf8c1b416573a59d70bbbef4bc98  jni/arm64-v8a/libgojni.so
+55bc0f79a034d03805b0ec9ac429cc593ac7544f1f199c0c706afe219d3fe776  jni/x86/libgojni.so
+1ed11aa9d1083eb494ca247d3dacd26ed0f9cf05f784fbb2cd70364e991f1ca5  jni/x86_64/libgojni.so
 ```
 
 All four ABIs pass `scripts/native_alignment.py`: PT_LOAD 16 KiB
@@ -87,9 +98,13 @@ Session.acceptNewHostKeys(byte[]): void throws Exception
 ```
 
 `acceptNewHostKeys` opts a session in to SSH accept-new host keys (core ADR 0035,
-`docs/android-ssh-auth.md`). The application calls it once, before `start`, for
+`docs/android-ssh-auth.md`). Independently of the opt-in, every androidcore session
+now uses only the SSH files its profile names (core ADR 0036): no default identity
+scan, no `~/.ssh/known_hosts` fallback, no `~` paths and no SSH agent; an SSH profile
+with neither an imported known_hosts nor the opt-in fails with
+`ssh_known_hosts_missing`. The application calls it once, before `start`, for
 every SSH-capable profile; see the SSH host keys section of
-[CONTRACT.md](CONTRACT.md). The earlier SSConf snapshot, auth and SSConf bridge
+[CONTRACT.md](CONTRACT.md). The earlier ssconf snapshot, auth and ssconf bridge
 bindings remain present with unchanged descriptors:
 `Androidcore.newSSConfSnapshot`, `Androidcore.newSessionWithSSConfSnapshot`,
 `Session.pendingAuth/replyAuth/cancelAuth`, `SSConfSocketProtector` extending

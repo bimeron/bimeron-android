@@ -33,6 +33,8 @@ enum class VpnErrorCode(@StringRes val messageRes: Int) {
     AUTH_CANCELLED(R.string.vpn_error_auth_cancelled),
     /** Core refused a known SSH host whose key changed (`ssh_host_key_mismatch`); never offered to the user. */
     HOST_KEY_MISMATCH(R.string.vpn_error_host_key_mismatch),
+    /** The imported known_hosts trusts a certificate authority and the server key matched nothing (`ssh_host_key_ca_required`). */
+    HOST_KEY_CA_REQUIRED(R.string.vpn_error_host_key_ca_required),
     /** An SSH session had neither an imported known_hosts file nor the accept-new opt-in. */
     SSH_KNOWN_HOSTS_MISSING(R.string.vpn_error_ssh_known_hosts_missing),
     RECOVERY_NEEDS_USER(R.string.vpn_error_recovery_needs_user),
@@ -257,7 +259,9 @@ internal val SSH_HOST_KEY_FAULTS = mapOf(
     "ssh_host_key_rejected" to VpnErrorCode.AUTH_CANCELLED,
     "ssh_host_key_unanswered" to VpnErrorCode.AUTH_UNANSWERED,
     "ssh_host_key_unknown" to VpnErrorCode.SSH_CONNECTION_FAILED,
-    // Android guard (core PR #104 follow-up): SSH without imported known_hosts and without the opt-in.
+    // Forgetting app-owned keys cannot help here, so it gets its own message instead of HOST_KEY_MISMATCH.
+    "ssh_host_key_ca_required" to VpnErrorCode.HOST_KEY_CA_REQUIRED,
+    // Core ADR 0036 (reported with or without the opt-in): SSH without imported known_hosts and without the opt-in.
     "ssh_known_hosts_missing" to VpnErrorCode.SSH_KNOWN_HOSTS_MISSING,
 )
 
