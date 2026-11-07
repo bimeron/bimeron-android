@@ -649,9 +649,65 @@ internal sealed interface StartPlan {
 internal fun alwaysOnTarget(recoveryId: String?, selectedId: String?): String? =
     sequenceOf(recoveryId, selectedId).firstOrNull { it != null && runCatching { UUID.fromString(it) }.isSuccess }
 
-/** Called for every accepted start: a user start retires a pending "Tap to reconnect" notification. */
-internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {
-    if (!recovery) port.cancelNotification()
+/**
+ * Called for every accepted start: a user start retires a pending "Tap to reconnect" notification and a
+ * pending "VPN disconnected" notice ([dropNotice]). A recovery start retires neither.
+ */
+internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort, dropNotice: DropNotice) {
+    if (recovery) return
+    port.cancelNotification()
+    dropNotice.cancel()
+}
+
+/**
+ * The "VPN disconnected" notice (audit M-1): fixed text that opens the app, with no profile name, server,
+ * Core or error text. The service posts it on the recovery channel under its own notification id.
+ */
+internal interface DropNotice {
+    /** Posts the notice. Does nothing when the app's notifications are off; never throws. */
+    fun post()
+    /** Retires a posted notice; never throws. */
+    fun cancel()
+}
+
+/**
+ * Codes that never get the drop notice: AUTH_CANCELLED is the user's own SSH cancel or host-key rejection, and
+ * RECOVERY_NEEDS_USER already posts its own "Tap to reconnect" notification.
+ */
+private val NO_DROP_NOTICE_CODES = setOf(VpnErrorCode.AUTH_CANCELLED, VpnErrorCode.RECOVERY_NEEDS_USER)
+
+/**
+ * Whether an ended attempt gets the "VPN disconnected" notice (M-1). It does exactly when the user did not end it
+ * and nobody was watching it start:
+ * - [userInitiated]: the attempt was ended by the user or replaced: Command.Stop (also onRevoke, when the user
+ *   disconnects in system settings or another VPN takes over), a newer Start (superseded token) or onDestroy.
+ *   All of these advance the attempt gate; a Stop that is sent but not yet consumed counts too. Never notifies.
+ * - [endCode]: the code the attempt itself ended with, before any teardown code (CLEANUP_BLOCKED,
+ *   RECOVERY_STATE_FAILED) replaced it, so a user's cancel stays a user's cancel. Codes in [NO_DROP_NOTICE_CODES]
+ *   never notify; any other code, or none (a plain disconnect), does.
+ * - [wasConnected]: the attempt reached `connected`. A later failure in any state, including `reconnecting`
+ *   (Core lost the server and gave up), notifies: the tunnel the user relied on is gone.
+ * - [recovery]: an unattended start (sticky restart, always-on). It continues a session the user had connected,
+ *   so a failure before `connected` notifies too, including one before its session runs (CLEANUP_BLOCKED,
+ *   RECOVERY_STATE_FAILED).
+ * A user start that fails before `connected` does not notify: the user is in the app and sees the error there.
+ */
+internal fun shouldNotifyDrop(endCode: VpnErrorCode?, userInitiated: Boolean, wasConnected: Boolean, recovery: Boolean): Boolean =
+    !userInitiated && endCode !in NO_DROP_NOTICE_CODES && (wasConnected || recovery)
+
+/**
+ * An attempt ended (Command.Finished, or a recovery start that failed before its session ran): posts the drop
+ * notice when [shouldNotifyDrop] says so and returns whether it did. The attempt counts as user-initiated when
+ * its [token] is no longer current (a Stop, a newer Start and onDestroy all advance the gate first) or when a
+ * user stop is already queued behind it ([stopPending]: an in-app STOP or onRevoke whose Command.Stop has not
+ * been consumed yet, so a failure caused by that teardown does not look like a drop).
+ */
+internal fun noteSessionFinished(
+    token: Long, endCode: VpnErrorCode?, wasConnected: Boolean, recovery: Boolean, stopPending: Boolean, notice: DropNotice,
+): Boolean {
+    val notify = shouldNotifyDrop(endCode, userInitiated = stopPending || !VpnLive.gate.accepts(token), wasConnected, recovery)
+    if (notify) notice.post()
+    return notify
 }
 
 /**

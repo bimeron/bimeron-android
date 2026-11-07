@@ -303,7 +303,8 @@ internal class AppModelOperations(
                     return@withLock
                 }
                 pendingSwitch.value = null
-                if (profile.mode == "vpn") start(id)
+                // An unsupported target (proxy mode or core KillSwitch = true) never starts, as on every other start path.
+                if (profile.startsAsSystemVpn) start(id)
                 else stop()
             } catch (e: CancellationException) {
                 throw e
@@ -331,8 +332,7 @@ internal class AppModelOperations(
         val valid = validApply(runtime.value)
         clearPendingApply()
         val profile = profiles.value.firstOrNull { it.id == id }
-        if (valid && profile?.mode == "vpn" &&
-            !Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$").containsMatchIn(profile.text)) start(id)
+        if (valid && profile?.startsAsSystemVpn == true) start(id)
     }
 
     fun save(text: String, id: String?, event: String, configurationChanged: Boolean = false, done: () -> Unit): kotlinx.coroutines.Job {
@@ -585,6 +585,15 @@ internal class AppModelOperations(
  * attempt is for. The delete path and every delete confirmation's warning use this one predicate.
  */
 internal fun deleteStopsVpn(vpn: VpnState, id: String): Boolean = id == vpn.activeProfileId || id == vpn.attemptProfileId
+
+private val CORE_KILL_SWITCH_ON = Regex("(?m)^\\s*KillSwitch\\s*=\\s*true\\s*$")
+
+/**
+ * Whether Android can start this profile as the system VPN: `Mode = vpn` and no core `KillSwitch = true`
+ * (docs/PROFILE-EDITOR.md). Older imports of either kind still load but never start. The connect button,
+ * Apply, the profile switch and the main page's "unsupported" state all use this one predicate.
+ */
+internal val Profile.startsAsSystemVpn: Boolean get() = mode == "vpn" && !CORE_KILL_SWITCH_ON.containsMatchIn(text)
 
 internal fun sameModelSession(a: VpnState, b: VpnState): Boolean =
     a.state == b.state && a.activeProfileId == b.activeProfileId &&
