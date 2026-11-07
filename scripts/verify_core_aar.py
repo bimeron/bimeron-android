@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SHA256 = "f8fa974b5c95240f911269586dd8803b2344f6e2fa96da85a002c7950f186454"
+EXPECTED_SHA256 = "3b30cbc58c6d73af48c4e80daddb791a39825cf185c4bb6a11b3052454da2aa9"
 
 
 def verify(path, expected=EXPECTED_SHA256):
