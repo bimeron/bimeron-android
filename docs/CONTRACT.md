@@ -97,5 +97,10 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_host_key_ca_required` →
   `HOST_KEY_CA_REQUIRED` (the imported known_hosts uses `@cert-authority`; forgetting app-owned keys does not
   help, so it has its own message), `ssh_known_hosts_missing` → `SSH_KNOWN_HOSTS_MISSING`. The app's own
-  fixed codes `TRUSTED_KEYS_UNREADABLE` and `SSH_FILE_OUTSIDE_APP` are raised before Core runs. A changed key is never offered and never accepted. Recovery still skips SSH-capable
-  profiles.
+  fixed codes `TRUSTED_KEYS_UNREADABLE` and `SSH_FILE_OUTSIDE_APP` are raised before Core runs. A changed key
+  is never offered and never accepted.
+- Recovery starts (sticky restart and always-on `SERVICE_INTERFACE`) never show UI. They classify with
+  `mustSkipRecovery`, which includes the same `mayNeedInteractiveAuth` that decides the opt-in, so every profile
+  that would opt in (and could therefore receive a host-key offer) is skipped before `runSession`. A recovery that
+  proceeds is positively non-SSH: it does not opt in and does not read the trusted-keys store, and the file guard
+  and fail-closed read still run on its input (`HostKeyRecoveryTest`).
