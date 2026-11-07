@@ -35,9 +35,70 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
   `RECOVERY_NEEDS_USER`. Non-SSH profiles recover as before.
   `RecoverySkipTest` (instrumentation) covers the SSH skip.
 - On Android 13 (API 33) and later the recovery notification is shown only if the
-  user granted the notification permission. The app does not request it at
-  runtime; without it the post is dropped silently and only the in-app state
-  carries `RECOVERY_NEEDS_USER`.
+  user granted the notification permission; without it the post is dropped
+  silently and only the in-app state carries `RECOVERY_NEEDS_USER`. See
+  "Notification permission" below for when the app asks.
+
+### Notification permission
+
+Decision #1 (2026-11-07), implemented in `NotificationPrompt.kt` and wired in
+`MainActivity`:
+
+- API 33+: the app asks for `POST_NOTIFICATIONS` once, right after the first
+  successful connect, meaning the first change from a non-connected state to
+  `connected` that the app observes while the Activity is resumed. It never
+  asks while the Android VPN consent dialog is up, while a consent result is
+  pending, or before the tunnel is connected. If notifications are already on at
+  that first connect, the decision is only recorded and nothing is shown.
+- Opening the app while the VPN is already connected (connect then Home, or a
+  background recovery reconnect) does not prompt: the state replayed at each
+  resume is not a transition. The flag stays unset in that case, so the next
+  observed connect still asks once.
+- The "already asked" flag (`notification_prompt` SharedPreferences,
+  `post_notifications_asked`) is committed synchronously before the request is
+  launched, so rotation, Activity recreation or process death while the system
+  dialog is open never produce a second prompt. The app never re-prompts
+  automatically; there is no in-app reset (clearing app data or reinstalling
+  resets it).
+- While notifications are off, Settings shows a "Notifications" section with one
+  row, "Notifications are off · Open settings". It opens the app's notification
+  settings (`Settings.ACTION_APP_NOTIFICATION_SETTINGS` with
+  `EXTRA_APP_PACKAGE`). The state is re-read with
+  `NotificationManagerCompat.areNotificationsEnabled()` on every resume and after
+  the permission result, so the section disappears once notifications are on.
+  On API 33+ the row is hidden before the one-time request (the default "off"
+  state is not the user's choice yet).
+- API < 33: nothing is requested or recorded. For consistency the row is shown
+  whenever the user turned the app's notifications off in system settings.
+- Only the app-level switch is checked; a single disabled channel (for example
+  "VPN recovery") does not show the row.
+- Automated coverage: `NotificationPromptTest` (JVM/Robolectric: decision table,
+  API < 33, consent flow, flag persistence across instances, request-once with a
+  recreated controller, row shown/hidden with the system state, settings intent
+  extras, no prompt and no flag for an already-connected replay at resume),
+  `A11yMainScreensTest` / `A11yLargeFontTest` (the row is one 48 dp
+  button whose click label is "Open settings"; no clipping at font scale 2), and
+  `NotificationPromptInstrumentedTest` (API 33+ device: no prompt when opened
+  while already connected; the system prompt appears only after an observed
+  change to `connected`, once, not again after a second connect or recreation,
+  and the Settings row appears; with the flag set no prompt appears).
+
+Manual device checklist (API 33+ unless noted):
+
+1. Fresh install → no prompt at launch or during VPN consent → connect → the
+   notification prompt appears once, after the status shows Connected.
+2. Deny → Settings shows "Notifications are off"; tap it → the app's
+   notification settings open.
+3. Rotate and disconnect/reconnect → no new prompt.
+   Fresh install variant: tap connect and press Home before it shows Connected (or let
+   recovery reconnect in the background), reopen → no prompt; disconnect and
+   connect again → the prompt appears once.
+4. Force-stop or swipe the app away, reopen and connect → no new prompt.
+5. Turn notifications on in system settings, return → the row is gone; turn them
+   off again → the row is back, still no prompt.
+6. Fresh install, allow at the prompt → no row; the VPN notification is visible.
+7. API < 33: no prompt ever; turning notifications off in system settings shows
+   the row, turning them on hides it.
 
 ### Profiles and home screen
 

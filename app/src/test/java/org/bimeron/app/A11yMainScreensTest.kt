@@ -5,8 +5,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -167,6 +172,24 @@ class A11yMainScreensTest {
         compose.onNode(role(Role.RadioButton) and hasText(str(R.string.light_theme)))
             .assertTouchTarget().performClick()
         assertEquals("light", chosen)
+    }
+
+    @Test fun notificationsOffRowIsOneButtonNamedByItsAction() {
+        var opened = 0
+        var off by mutableStateOf(false)
+        show { SettingsPage("dark", {}, {}, {}, notificationsOff = off, onNotificationSettings = { opened++ }) }
+        val clickTargetsBefore = compose.onAllNodes(hasClickAction()).fetchSemanticsNodes().size
+        off = true
+        compose.waitForIdle()
+        compose.onNode(isHeading() and hasText(str(R.string.notifications_section_title))).assertExists()
+        val clickLabel = SemanticsMatcher("click label") { it.config.getOrNull(SemanticsActions.OnClick)?.label == str(R.string.notifications_open_settings) }
+        // One stop: title and hint are merged into the row; the visual "Open settings" caption is its click label.
+        compose.onNode(role(Role.Button) and hasText(str(R.string.notifications_off_title)) and hasText(str(R.string.notifications_off_hint)) and clickLabel)
+            .assertTouchTarget().performClick()
+        assertEquals(1, opened)
+        compose.onAllNodesWithText(str(R.string.notifications_open_settings)).assertCountEquals(0)
+        // The theme, log and navigation targets are unchanged; the row adds exactly one.
+        compose.onAllNodes(hasClickAction()).assertCountEquals(clickTargetsBefore + 1)
     }
 
     @Test fun journalEntryIsOneStop() {
