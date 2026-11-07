@@ -60,6 +60,19 @@ class ConfigDocument private constructor(private val blocks: List<Block>) {
         return ConfigDocument(blocks.mapIndexed { i, block -> if (i == target) block.copy(disabled = !enabled) else block })
     }
     fun addRule() = ConfigDocument(blocks + Block("Rule", listOf("[Rule]", "Domain = example.com", "Action = proxy", "")))
+    /** Appends an empty [section] header unless it already exists. */
+    fun addSection(section: String): ConfigDocument =
+        if (blocks.any { it.section == section }) this else ConfigDocument(blocks + Block(section, listOf("[$section]", "")))
+    /** Replaces all rule blocks with [rules], kept verbatim, at the position of the first current rule (else at the end). */
+    fun withRules(rules: List<Block>): ConfigDocument {
+        require(rules.all { it.section == "Rule" })
+        val at = blocks.indexOfFirst { it.section == "Rule" }.takeIf { it >= 0 } ?: blocks.size
+        return ConfigDocument(blocks.take(at) + rules + blocks.drop(at).filterNot { it.section == "Rule" })
+    }
+    /** Trimmed comment lines of every block, including comments inside rules. */
+    fun comments(): List<String> = blocks.flatMap { block ->
+        block.lines.map { it.trim() }.filter { it.startsWith('#') || it.startsWith(';') }
+    }
     fun removeRule(index: Int): ConfigDocument {
         val target = blocks.indices.filter { blocks[it].section == "Rule" }[index]
         return ConfigDocument(blocks.filterIndexed { i, _ -> i != target })
