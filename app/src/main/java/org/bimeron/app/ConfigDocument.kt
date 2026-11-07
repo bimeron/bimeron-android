@@ -63,6 +63,9 @@ class ConfigDocument private constructor(private val blocks: List<Block>) {
     /** Appends an empty [section] header unless it already exists. */
     fun addSection(section: String): ConfigDocument =
         if (blocks.any { it.section == section }) this else ConfigDocument(blocks + Block(section, listOf("[$section]", "")))
+    /** Appends [other]'s [section] block verbatim (comments included) unless this document has that section. */
+    fun withSectionFrom(other: ConfigDocument, section: String): ConfigDocument =
+        if (blocks.any { it.section == section }) this else ConfigDocument(blocks + other.blocks.filter { it.section == section })
     /** Replaces all rule blocks with [rules], kept verbatim, at the position of the first current rule (else at the end). */
     fun withRules(rules: List<Block>): ConfigDocument {
         require(rules.all { it.section == "Rule" })
