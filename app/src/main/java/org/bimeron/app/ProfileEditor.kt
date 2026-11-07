@@ -184,6 +184,8 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     fun leave() { model.editorDraft = null; model.clearError(); onBack() }
     val conflictMessages = setOf(stringResource(R.string.profile_conflict_review), stringResource(R.string.profile_deleted_elsewhere),
         stringResource(R.string.profile_conflict_unreadable))
+    // Fixed store messages without profile content, shown as they are on protected profiles too.
+    val shownOnProtectedText = shownOnProtected.map { stringResource(it) }.toSet()
     fun back() { if (!locked) { if (draft.dirty) discard = true else leave() } }
     fun validate(save: Boolean) {
         if (locked || draft.pendingProtocolEdits) return
@@ -204,7 +206,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                 if (!current()) return@launch
                 if (save) model.save(text, profile.id, context.getString(R.string.editor_saved), draft.configurationChanged()) { leave() }
                 else draft.error = context.getString(R.string.editor_validated)
-            } catch (e: ProfileError) { if (current()) draft.error = if (protected) context.getString(R.string.protocol_form_failed) else e.text(context) }
+            } catch (e: ProfileError) { if (current()) draft.error = if (protected && e.resId !in shownOnProtected) context.getString(R.string.protocol_form_failed) else e.text(context) }
             catch (_: Exception) { if (current()) draft.error = context.getString(R.string.editor_validation_failed) }
             finally { draft.validating = false }
         }
@@ -224,7 +226,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
         }
         // While the conflict panel is open it explains the conflict itself.
         val message = (draft.error ?: draft.parseError?.text(context) ?: saveError)?.takeUnless { draft.conflict != null && it in conflictMessages }
-        if (message != null) Text(if (!protected || message in conflictMessages || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+        if (message != null) Text(if (!protected || message in conflictMessages || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid) || message in shownOnProtectedText) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
         if (locked) LinearProgressIndicator(Modifier.fillMaxWidth())
         // A rebase or reload replaces the draft's base: form-local state (reveals, pending form edits) starts over.
         key(draft.session) {
@@ -351,10 +353,13 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
         confirmButton = { TextButton(onClick = { delete = false; model.delete(profile.id) { leave() } }) { Text(stringResource(R.string.delete)) } }, dismissButton = { TextButton(onClick = { delete = false }) { Text(stringResource(R.string.cancel)) } })
     draft.conflict?.let { conflict ->
         // Operation failures use the same protected-profile wording as the editor's message line.
-        val failure = saveError?.takeIf { it !in conflictMessages }?.let { if (protected) stringResource(R.string.protocol_form_failed) else it }
+        val failure = saveError?.takeIf { it !in conflictMessages }?.let { if (protected && it !in shownOnProtectedText) stringResource(R.string.protocol_form_failed) else it }
         EditorConflictDialog(model, draft, conflict, locked, failure, deleteStopsVpn(vpn, profile.id)) { leave() }
     }
 }
+
+/** [ProfileError] messages the editor shows as they are on protected profiles: fixed text, no profile content. */
+internal val shownOnProtected = setOf(R.string.ssh_files_not_imported)
 
 @Composable private fun EditorHint(text: String) { Text(text, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 @Composable private fun EditorField(label: String, value: String, enabled: Boolean, keyboard: KeyboardType = KeyboardType.Text, change: (String) -> Unit) {

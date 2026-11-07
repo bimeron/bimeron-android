@@ -10,9 +10,11 @@ import org.junit.rules.TemporaryFolder
 
 class SshProfileStoreTest {
     @get:Rule val temporary = TemporaryFolder()
+    /** The production layout: profiles beside `ssh-resources` under one canonical files root. */
+    private fun profiles() = File(temporary.root.canonicalFile, "profiles").apply { mkdirs() }
     @Test fun failedRenamePreservesOldResourcesAndRetryCommitsBothKeys() = runBlocking {
-        val directory = temporary.newFolder("profiles")
-        val resources = SshProfileResources(File(temporary.root.canonicalFile, "resources"))
+        val directory = profiles()
+        val resources = SshProfileResources(File(temporary.root.canonicalFile, "ssh-resources"))
         val store = ProfileStore(null, directory, resources) {}
         val id = UUID.randomUUID()
         val old = resources.prepare(id, resources.stage(SshProfileResources.Kind.IDENTITY, "old".byteInputStream()))
@@ -48,8 +50,8 @@ class SshProfileStoreTest {
     }
 
     @Test fun cancellationAtCommittedRenameRetainsBothKeysThroughDisposalAndReload() = runBlocking {
-        val directory = temporary.newFolder("profiles")
-        val resources = SshProfileResources(File(temporary.root.canonicalFile, "resources"))
+        val directory = profiles()
+        val resources = SshProfileResources(File(temporary.root.canonicalFile, "ssh-resources"))
         val store = ProfileStore(null, directory, resources) {}
         val id = UUID.randomUUID()
         val old = resources.prepare(id, resources.stage(SshProfileResources.Kind.IDENTITY, "old".byteInputStream()))
@@ -82,8 +84,8 @@ class SshProfileStoreTest {
     }
 
     @Test fun cancellationDuringValidationRetainsPublishedRetryBytes() = runBlocking {
-        val directory = temporary.newFolder("profiles")
-        val resources = SshProfileResources(File(temporary.root.canonicalFile, "resources"))
+        val directory = profiles()
+        val resources = SshProfileResources(File(temporary.root.canonicalFile, "ssh-resources"))
         val id = UUID.randomUUID()
         val draft = SshDraftResources(id)
         val token = resources.stage(SshProfileResources.Kind.IDENTITY, "key".byteInputStream())
@@ -97,20 +99,30 @@ class SshProfileStoreTest {
         assertFalse(File(token.prepared!!.path).exists())
     }
 
-    /** A saved draft generation must not stay draft-owned when another referenced path is not owned. */
-    @Test fun deleteRemovesSavedKeyEvenWithUnownedKnownHosts() = runBlocking {
-        val resources = SshProfileResources(File(temporary.root.canonicalFile, "resources"))
-        val store = ProfileStore(null, temporary.newFolder("profiles"), resources) {}
+    /**
+     * Decision 8: a save with an unowned path is refused before anything is written, and the draft keeps its
+     * published import for a retry. A legacy stored profile with such a path still deletes its own key.
+     */
+    @Test fun unownedKnownHostsIsRefusedAndLegacyDeleteRemovesSavedKey() = runBlocking {
+        val resources = SshProfileResources(File(temporary.root.canonicalFile, "ssh-resources"))
+        val directory = profiles()
+        val store = ProfileStore(null, directory, resources) {}
         val id = UUID.randomUUID()
         val draft = SshDraftResources(id)
         val placeholder = draft.accept(resources.stage(SshProfileResources.Kind.IDENTITY, "k".byteInputStream()))!!
-        val text = ConfigDocument.parse(Conf.fromKey("Ssh", "ssh://user@example.com:22"))
-            .set("AccessKey", "IdentityFile", placeholder).set("AccessKey", "KnownHostsFile", "/tmp/known_hosts").render()
-        val result = store.compareAndSave(UUID.randomUUID(), id, null, text, draft)
+        val base = ConfigDocument.parse(Conf.fromKey("Ssh", "ssh://user@example.com:22")).set("AccessKey", "IdentityFile", placeholder)
+        val refused = runCatching { store.compareAndSave(UUID.randomUUID(), id, null, base.set("AccessKey", "KnownHostsFile", "/tmp/known_hosts").render(), draft) }
+        assertEquals(R.string.ssh_files_not_imported, (refused.exceptionOrNull() as ProfileError).resId)
+        assertFalse(File(directory, "$id.conf").exists())
+        val result = store.compareAndSave(UUID.randomUUID(), id, null, base.render(), draft)
         assertTrue("$result", result is CommitResult.Committed)
         draft.dispose(resources)
+        val key = ConfigDocument.parse(store.load().first.single().text).value("AccessKey", "IdentityFile")
+        // Written by an older version, before save-time validation.
+        File(directory, "$id.conf").writeText(ConfigDocument.parse(File(directory, "$id.conf").readText())
+            .set("AccessKey", "KnownHostsFile", "/tmp/known_hosts").render())
         val stored = store.load().first.single()
-        val key = ConfigDocument.parse(stored.text).value("AccessKey", "IdentityFile")
+        assertEquals("/tmp/known_hosts", ConfigDocument.parse(stored.text).value("AccessKey", "KnownHostsFile"))
         assertTrue(File(key).exists())
         assertTrue(store.compareAndDelete(UUID.randomUUID(), id, stored.revision) is CommitResult.Committed)
         assertFalse("private key of a deleted profile left on disk", File(key).exists())
