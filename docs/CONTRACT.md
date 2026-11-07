@@ -56,8 +56,11 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
     fails with `ssh_known_hosts_missing` before dialing.
   - **Manifest:** no storage permission is requested (checked on the processed merged manifest), and the app
     reads SSH files only through the Storage Access Framework import.
-  - **Not yet:** the SSH form and `ProfileStore.validate` still accept a typed absolute path at save time; such
-    a profile saves but cannot connect.
+  - **Save (every save path, through `compareAndSave`):** `ProfileStore.validate` applies the same check
+    (`SshFileGuard.insideApp(text, id, filesRoot)`, which the service's check delegates to) after resolving the
+    draft's import placeholders, before the store lock, and refuses with the fixed `ssh_files_not_imported`
+    message. The SSH form marks such typed paths at the field. Profiles stored earlier with outside paths
+    still load and open; they fail to save until the files are imported, and fail to connect as above.
 - Trusted keys fail closed. If the store cannot be read (I/O error, symlink, oversized, or any line that is not
   a valid offer line) the attempt fails with `TRUSTED_KEYS_UNREADABLE` before any native session; it never opts
   in with no keys, which would offer a changed key as a new server. If Core rejects the bytes the attempt fails
