@@ -5,4 +5,10 @@
     <string name="ssh_form_identity_file">Путь к закрытому ключу (IdentityFile)</string>
     <string name="ssh_form_known_hosts_file">Путь к known_hosts (KnownHostsFile)</string>
     <string name="ssh_form_hint">Работают только доступные приложению абсолютные пути файловой системы Android. URI content:// (SAF) и file:// не являются прямыми путями; пути с ~ и относительные пути здесь не поддерживаются. В текущей версии нет импорта SSH-файлов и запросов пароля, keyboard-interactive или парольной фразы зашифрованного ключа. Импорт ожидает интеграции Core и управления ресурсами профиля. Пустые пути оставляют выбор файлов по умолчанию за Core; их наличие и доступность не гарантируются.</string>
+    <string name="ssh_trusted_host_keys_count">Доверенные ключи серверов: %1$d</string>
+    <string name="ssh_trusted_host_keys_forget">Забыть</string>
+    <string name="ssh_trusted_host_keys_forget_description">Забыть доверенные ключи серверов</string>
+    <string name="ssh_trusted_host_keys_forget_title">Забыть доверенные ключи серверов?</string>
+    <string name="ssh_trusted_host_keys_forget_message">При следующем подключении будет показан отпечаток сервера и снова запрошено доверие.</string>
+    <string name="ssh_trusted_host_keys_forget_failed">Не удалось забыть доверенные ключи серверов.</string>
 </resources>

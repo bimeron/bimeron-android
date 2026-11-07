@@ -372,6 +372,10 @@ class BimeronVpnService : VpnService() {
             } catch (_: Exception) {
                 throw SessionFailure(VpnErrorCode.INVALID_PROFILE)
             }
+            // Accept-new host keys: every SSH-capable profile opts in, read on IO before any native session.
+            val trustedHostKeys = trustedHostKeysFor(sessionInput, token,
+                read = { profileId -> withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }.trustedHostKeys(profileId) },
+                warn = { AppEvents.add(R.string.journal_trusted_host_keys_not_loaded, LogLevel.WARNING) })
             val protector = object : SocketProtector {
                 override fun protect(fd: Long): Boolean {
                     if (fd < 0 || fd > Int.MAX_VALUE) return false
@@ -412,11 +416,18 @@ class BimeronVpnService : VpnService() {
                 .addAddress("198.18.0.1", 24).addRoute("0.0.0.0", 0)
                 .addAddress("fdfe:524c::1", 128).addRoute("::", 0)
                 .addDnsServer("198.18.0.2").establish() ?: throw SessionFailure(VpnErrorCode.TUN_FAILED)
-            session.start()
+            startCoreSession(trustedHostKeys, optIn = { session.acceptNewHostKeys(it) }, start = { session.start() },
+                warn = { AppEvents.add(R.string.journal_trusted_host_keys_not_loaded, LogLevel.WARNING) })
             val auth = AuthAttempt(token, SessionAuthPort(session),
                 isOpen = { !closing.get() && VpnLive.gate.accepts(token) },
                 onCancelled = {
                     stopAfterUserCancel(id, token, getString(VpnErrorCode.AUTH_CANCELLED.messageRes), ownerJob)
+                },
+                // Runs on IO after Core accepted the user's Trust; the line is the endpoint-matched offer's own.
+                onHostKeyAccepted = { line ->
+                    persistAcceptedHostKey(line,
+                        store = { ProfileStore.get(applicationContext).rememberTrustedHostKey(sessionInput.id, it) },
+                        warn = { AppEvents.add(it, LogLevel.WARNING) })
                 })
             VpnAuthEndpoint.register(token, auth)
             while (currentCoroutineContext().isActive) {

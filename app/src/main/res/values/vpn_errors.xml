@@ -21,4 +21,6 @@
     <string name="vpn_error_ssconf_consent_required">VPN permission is required to refresh SSConf.</string>
     <string name="vpn_error_start_failed">Could not start VPN.</string>
     <string name="vpn_error_stop_failed">VPN stopped unexpectedly.</string>
+    <string name="vpn_error_host_key_mismatch">The server\'s host key has changed. The connection was refused to protect you. If the server was legitimately reinstalled, forget its trusted server keys in the profile editor, or import an updated known_hosts file, and connect again.</string>
+    <string name="vpn_error_ssh_known_hosts_missing">This profile has no trusted server keys. Import a known_hosts file, or connect again to confirm the server\'s key.</string>
 </resources>

@@ -8,4 +8,10 @@
     <string name="ssh_auth_cancel_failed">Не удалось отменить. Нажмите «Отмена» ещё раз, чтобы закрыть это окно.</string>
     <string name="ssh_auth_error">Не удалось завершить аутентификацию SSH.</string>
     <string name="ssh_import_error">Не удалось импортировать файл SSH.</string>
+    <string name="ssh_host_key_title">Новый сервер</string>
+    <string name="ssh_host_key_server">Сервер: %1$s</string>
+    <string name="ssh_host_key_type">Тип ключа: %1$s</string>
+    <string name="ssh_host_key_fingerprint_label">Отпечаток SHA256:</string>
+    <string name="ssh_host_key_verify_hint">Прежде чем доверять, сверьте этот отпечаток с администратором сервера.</string>
+    <string name="ssh_host_key_trust">Доверять</string>
 </resources>

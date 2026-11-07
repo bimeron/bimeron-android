@@ -21,3 +21,46 @@ The embedded core artifact and its source revision are documented in [CORE-AAR.m
 - `commitSnapshot(ticket, body)` re-checks under the store lock that the profile exists (`DELETED`), still has the ticket's source (`SOURCE_CHANGED`; source A→B→A is accepted), that no newer ticket has committed (`SUPERSEDED`) and that `ticket.stillValid()` holds (`STALE_TICKET`). It then writes `<uuid>.snap.tmp-*`, syncs, atomically renames and syncs the directory. An I/O failure returns `NotPersisted` and leaves the previous file; the caller keeps the body in memory.
 - `discardSnapshot(ticket, digest)` deletes the file only when it decodes to the ticket's source and body digest. It never consumes the ticket, so a following `commitSnapshot` with the same ticket can replace the body.
 - Saving a profile keeps its snapshot only if the new source equals the snapshot's source; deleting a profile deletes its snapshot. The startup sweep deletes `.snap` files without a profile and leftover tmp files, and deletes nothing when `ssconf/` contains anything unexpected or a symlink.
+
+## SSH host keys
+
+Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-key offers".
+
+- Every SSH-capable profile opts in: `BimeronVpnService.runSession` reads the profile's stored lines on IO,
+  after the single session-input read and before any native session, with the attempt token checked on both
+  sides, and calls `Session.acceptNewHostKeys(bytes)` once, before `start`. SSH-capable is the recovery
+  classification `mayNeedInteractiveAuth` (SSH, `Type = ssh`, any `ssh://` value, unknown or unparsable);
+  positively non-SSH profiles do not opt in. The call is made even with no stored keys, so an unknown host is
+  offered. An imported `KnownHostsFile` stays trusted alongside; Core trusts the union. Android sessions use
+  only files imported into app storage: no storage permission is declared and no `/sdcard` or `~/.ssh` path is
+  read or passed to Core.
+- If the store cannot be read the session opts in with no keys and journals a fixed WARN. If Core rejects the
+  bytes the session starts without the opt-in (known_hosts-only verification) and journals the same WARN.
+  Neither path trusts anything silently.
+- `pendingAuth` kind `host_key` is parsed strictly by `SshAuthenticationController.parse`: 48-hex ids;
+  `host` from Core's literal alphabet as `host:port` (IPv6 bracketed); a known key type; `SHA256:` plus 43
+  unpadded base64 characters equal to the digest of the key in the line; and a `knownHostsLine` of exactly
+  three single-space printable ASCII fields, at most 12 KiB, whose host is the OpenSSH normalization of `host`
+  (bare for port 22, `[host]:port` otherwise, at most 300 characters) and whose type and key blob match
+  `keyType`. Anything else is rejected and never shown. Existing kinds are unchanged.
+- The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace, with
+  FLAG_SECURE. Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
+  `cancelAuth`. Rejections use the existing failed states.
+- Persistence: after Core accepts `["accept"]`, `AuthAttempt` (service side) passes the `knownHostsLine` of the
+  offer it published under the same ids to `ProfileStore.rememberTrustedHostKey`, never UI input. Under the
+  store lock the profile must still exist; the line is deduplicated and the file capped at 256 KiB (Core's
+  limit). A failure or a full file leaves the session running (Core remembers the key for its reconnects) and
+  journals a fixed WARN.
+- Storage: `filesDir/trusted-hosts/<uuid>.known_hosts`, directory `0700`, file `0600`, one plain line per key,
+  replaced atomically (tmp, fsync, `ATOMIC_MOVE`, directory fsync). It is a separate top-level tree, outside
+  `profiles/`, `ssconf/` and `ssh-resources/`, so the fail-closed startup sweep neither inspects it nor skips
+  because of it. Reads return only lines that are valid offer lines, so a damaged file cannot make Core reject
+  the opt-in. `compareAndDelete` removes the file best-effort under the store lock. A new profile, including
+  "Save as new profile", starts with no trusted keys.
+- The profile editor's SSH section shows "Trusted server keys: N" with Forget (after a confirmation), which
+  deletes the file immediately; it is not part of Save.
+- `Status.LastError` mapping, ahead of the auth-history heuristic: `ssh_host_key_mismatch` →
+  `HOST_KEY_MISMATCH`, `ssh_host_key_rejected` → `AUTH_CANCELLED`, `ssh_host_key_unanswered` →
+  `AUTH_UNANSWERED`, `ssh_host_key_unknown` → `SSH_CONNECTION_FAILED`, `ssh_known_hosts_missing` →
+  `SSH_KNOWN_HOSTS_MISSING`. A changed key is never offered and never accepted. Recovery still skips SSH-capable
+  profiles.

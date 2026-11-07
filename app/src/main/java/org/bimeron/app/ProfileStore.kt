@@ -643,8 +643,28 @@ class ProfileStore internal constructor(
             syncDirectory()
             runCatching { deleteSnapshotFile(snapshotFile(id)) }
             runCatching { resources.afterDeleted(id) }
+            runCatching { trustedHosts().forget(id) }
             CommitResult.Committed(receipt)
         }
+    }
+    /** App-owned accept-new SSH host keys (CONTRACT.md, SSH host keys); every call holds [guard]. */
+    private val trustedHostStore = TrustedHostKeys(File(directory.absoluteFile.parentFile, TrustedHostKeys.DIRECTORY))
+    private fun trustedHosts(): TrustedHostKeys {
+        require(rootValid)
+        trustedRoot?.let { checkedBelow(it, trustedHostStore.directory) }
+        return trustedHostStore
+    }
+    /** Stored host-key lines of [id] for `Session.acceptNewHostKeys`; empty when none. Throws on failure. */
+    suspend fun trustedHostKeys(id: UUID): ByteArray = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().read(id) } }
+    suspend fun trustedHostKeyCount(id: UUID): Int = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().count(id) } }
+    suspend fun forgetTrustedHostKeys(id: UUID): Unit = withContext(Dispatchers.IO) { synchronized(guard) { trustedHosts().forget(id) } }
+    /**
+     * Blocking, off Main: persists a host-key line the user trusted. Null when [id] no longer exists, so a
+     * profile deleted during its session gets no file back. Throws on an I/O failure.
+     */
+    internal fun rememberTrustedHostKey(id: UUID, line: String): TrustedHostKeys.Append? = synchronized(guard) {
+        if (!rootValid || !java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) null
+        else trustedHosts().append(id, line)
     }
     // Transitional callers capture the current revision at their operation boundary, not editor-open time.
     suspend fun save(text: String, id: String? = null, imports: SshDraftResources? = null): Profile {

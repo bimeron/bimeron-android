@@ -21,4 +21,6 @@
     <string name="vpn_error_ssconf_consent_required">Для обновления SSConf требуется разрешение на VPN.</string>
     <string name="vpn_error_start_failed">Не удалось запустить VPN.</string>
     <string name="vpn_error_stop_failed">VPN неожиданно остановлен.</string>
+    <string name="vpn_error_host_key_mismatch">Ключ сервера изменился. Подключение отклонено для вашей защиты. Если сервер действительно был переустановлен, забудьте его доверенные ключи в редакторе профиля или импортируйте обновлённый файл known_hosts и подключитесь снова.</string>
+    <string name="vpn_error_ssh_known_hosts_missing">У этого профиля нет доверенных ключей сервера. Импортируйте файл known_hosts или подключитесь снова, чтобы подтвердить ключ сервера.</string>
 </resources>
