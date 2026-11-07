@@ -526,7 +526,7 @@ internal class AppModelOperations(
         try {
             precheck()
             val vpn = runtime.value
-            if (id == vpn.activeProfileId || id == vpn.attemptProfileId) {
+            if (deleteStopsVpn(vpn, id)) {
                 stop()
                 val stopped = withTimeoutOrNull(15_000) {
                     runtime.first { it.state == "disconnected" || it.state == "failed" }
@@ -583,6 +583,12 @@ internal class AppModelOperations(
         } catch (_: Exception) { warning.value = true }
     }
 }
+
+/**
+ * Whether deleting profile [id] stops the VPN first: it is the connected profile or the one a connection
+ * attempt is for. The delete path and every delete confirmation's warning use this one predicate.
+ */
+internal fun deleteStopsVpn(vpn: VpnState, id: String): Boolean = id == vpn.activeProfileId || id == vpn.attemptProfileId
 
 internal fun sameModelSession(a: VpnState, b: VpnState): Boolean =
     a.state == b.state && a.activeProfileId == b.activeProfileId &&

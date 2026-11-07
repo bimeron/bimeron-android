@@ -27,11 +27,11 @@ import androidx.compose.ui.window.DialogProperties
  * The edit-conflict panel over the editor. For a changed profile it lists the conflicting fields with
  * mine/theirs choices (secrets masked until revealed per field) and applies the merge locally; nothing
  * is saved until the user saves again. For a deleted or unreadable profile only save-as-new is offered.
- * After a delete conflict it asks to delete anyway ([active]: the profile's VPN would be stopped first).
+ * After a delete conflict it asks to delete anyway ([stopsVpn]: [deleteStopsVpn], the VPN is stopped first).
  * [failure] is the latest operation error to show inside the panel, if any.
  */
 @Composable internal fun EditorConflictDialog(model: AppModel, draft: EditorDraft, conflict: EditorConflict, locked: Boolean,
-                                              failure: String?, active: Boolean, onClosed: () -> Unit) {
+                                              failure: String?, stopsVpn: Boolean, onClosed: () -> Unit) {
     val context = LocalContext.current
     var confirmReload by remember(conflict) { mutableStateOf(false) }
     val saveAsNew = { model.saveAsNew(context.getString(R.string.profile_saved_as_new)) { onClosed() }; Unit }
@@ -44,7 +44,7 @@ import androidx.compose.ui.window.DialogProperties
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(stringResource(R.string.profile_delete_changed_message))
-                    if (active) Text(stringResource(R.string.delete_active_warning))
+                    if (stopsVpn) Text(stringResource(R.string.delete_active_warning))
                     failureText()
                 }
             },

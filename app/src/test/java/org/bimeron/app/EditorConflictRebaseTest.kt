@@ -656,4 +656,21 @@ class EditorConflictRebaseTest {
         assertEquals(1, done)
         assertTrue(store.load().first.none { it.id == id })
     }
+
+    /** The delete path stops the VPN exactly when the confirmations warn about it ([deleteStopsVpn]). */
+    @Test fun deleteStopsTheVpnWhileTheProfileIsBeingConnected() = scenario {
+        val id = create(ss("A"))
+        val other = create(ss("B"))
+        runtime.value = VpnState(state = "connecting", attemptProfileId = other)
+        open(id)
+        model.delete(id) { done++ }.join()
+        assertEquals(0, stops)
+        val draft = open(other)
+        runtime.value = VpnState(state = "connecting", attemptProfileId = other)
+        assertTrue(deleteStopsVpn(runtime.value, draft.profile.id))
+        model.delete(other) { done++ }.join()
+        assertEquals(1, stops)
+        assertEquals(2, done)
+        assertTrue(store.load().first.isEmpty())
+    }
 }
