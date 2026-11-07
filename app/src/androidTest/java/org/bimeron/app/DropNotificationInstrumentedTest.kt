@@ -78,7 +78,7 @@ class DropNotificationInstrumentedTest {
         VpnLive.publish(VpnState("connecting", attemptProfileId = id), token)
         assertEquals("connected", VpnLive.publishCoreStatus(token, id, "connected", 1, 1, SystemClock.elapsedRealtime()))
         VpnLive.publishFailure(VpnErrorCode.PACKET_IO, context.getString(VpnErrorCode.PACKET_IO.messageRes), id, token)
-        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice))
+        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice))
 
         val posted = await(expectPosted = true)
         assertNotNull("Drop notice not posted", posted)

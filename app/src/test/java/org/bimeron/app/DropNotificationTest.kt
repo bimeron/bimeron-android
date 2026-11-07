@@ -56,7 +56,7 @@ class DropNotificationTest {
 
     @Test fun failureAfterConnectedPostsFixedTextThatOpensTheApp() {
         val token = connectedThenFailed(VpnErrorCode.PACKET_IO)
-        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice))
+        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice))
         val posted = assertNotNullPosted()
         assertEquals(BimeronVpnService.RECOVERY_CHANNEL, posted.channelId)
         val extras = posted.extras
@@ -74,20 +74,24 @@ class DropNotificationTest {
         assertEquals(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP,
             tap.savedIntent.flags and (Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP))
         assertTrue(tap.flags and PendingIntent.FLAG_UPDATE_CURRENT != 0)
+        assertTrue(tap.flags and PendingIntent.FLAG_IMMUTABLE != 0)
+        // Default (private) lock-screen visibility, like the recovery notification; it alerts once per post.
+        assertEquals(Notification.VISIBILITY_PRIVATE, posted.visibility)
+        assertTrue(posted.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
         assertNotEquals(BimeronVpnService.RECOVERY_NOTIFICATION_ID, BimeronVpnService.DROP_NOTIFICATION_ID)
     }
 
     @Test fun userStopPostsNothing() {
         val token = connectedThenFailed(VpnErrorCode.PACKET_IO)
         VpnLive.nextAttempt() // Command.Stop
-        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice)
+        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice)
         assertEquals(0, shadow.size())
     }
 
     @Test fun supersededAttemptPostsNothing() {
         val token = connectedThenFailed(VpnErrorCode.CORE_CONNECT_FAILED)
         VpnLive.publish(VpnState("connecting", attemptProfileId = id), VpnLive.nextAttempt()) // a newer Start
-        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice)
+        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice)
         assertEquals(0, shadow.size())
     }
 
@@ -95,7 +99,7 @@ class DropNotificationTest {
         val token = VpnLive.nextAttempt()
         VpnLive.publishCoreStatus(token, id, "connected", 1, 1, 100)
         stopAfterUserCancel(id, token, "fixed", owner = null)
-        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice)
+        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice)
         assertEquals(0, shadow.size())
     }
 
@@ -103,7 +107,7 @@ class DropNotificationTest {
         manager.notify(BimeronVpnService.RECOVERY_NOTIFICATION_ID, Notification.Builder(context, BimeronVpnService.RECOVERY_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_bimeron).build())
         val token = connectedThenFailed(VpnErrorCode.NETWORK_ERROR)
-        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice)
+        noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice)
         assertNotNullPosted()
         noteStartCommand(recovery = true, NoRecoveryPort, notice)
         assertNotNullPosted()
@@ -116,7 +120,7 @@ class DropNotificationTest {
     @Test fun notificationsOffPostsNothingAndDoesNotThrow() {
         shadow.setNotificationsEnabled(false)
         val token = connectedThenFailed(VpnErrorCode.PACKET_IO)
-        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, notice))
+        assertTrue(noteSessionFinished(token, VpnLive.state.value.code, wasConnected = true, recovery = false, stopPending = false, notice))
         assertEquals(0, shadow.size())
         notice.cancel()
     }

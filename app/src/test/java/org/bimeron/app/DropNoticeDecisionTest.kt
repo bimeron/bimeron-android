@@ -86,8 +86,8 @@ class DropNoticeDecisionTest {
         return token
     }
 
-    private fun finish(token: Long, notice: DropNotice, connected: Boolean = true, recovery: Boolean = false) =
-        noteSessionFinished(token, VpnLive.state.value.code, connected, recovery, notice)
+    private fun finish(token: Long, notice: DropNotice, connected: Boolean = true, recovery: Boolean = false, stopPending: Boolean = false) =
+        noteSessionFinished(token, VpnLive.state.value.code, connected, recovery, stopPending, notice)
 
     @Test fun packetFailureAfterConnectedPostsOnce() {
         val notice = FakeDropNotice()
@@ -113,6 +113,32 @@ class DropNoticeDecisionTest {
         VpnLive.nextAttempt()
         assertFalse(finish(token, notice))
         assertTrue(notice.effects.isEmpty())
+    }
+
+    /**
+     * S-1: onRevoke or an in-app STOP whose Command.Stop is still queued behind this attempt's Command.Finished.
+     * The system teardown made the session fail first, so the token is still current; the stop is the user's.
+     */
+    @Test fun failureRacingAQueuedUserStopDoesNotPost() {
+        val notice = FakeDropNotice()
+        val token = connectedAttempt()
+        VpnLive.publishFailure(VpnErrorCode.PACKET_IO, "fixed", id, token)
+        assertTrue(VpnLive.gate.accepts(token))
+        assertFalse(finish(token, notice, stopPending = true))
+        assertFalse(finish(token, notice, connected = false, recovery = true, stopPending = true))
+        assertTrue(notice.effects.isEmpty())
+    }
+
+    /** A recovery start that cannot even run its session (cleanup blocked, recovery id not saved) is announced. */
+    @Test fun recoveryFailingBeforeItsSessionRunsPosts() {
+        for (code in listOf(VpnErrorCode.CLEANUP_BLOCKED, VpnErrorCode.RECOVERY_STATE_FAILED)) {
+            val notice = FakeDropNotice()
+            val token = VpnLive.nextAttempt()
+            VpnLive.publish(failureState(code, { "fixed" }, id), token)
+            assertTrue("$code", noteSessionFinished(token, code, wasConnected = false, recovery = true, stopPending = false, notice))
+            assertFalse("$code user", noteSessionFinished(token, code, wasConnected = false, recovery = false, stopPending = false, notice))
+            assertEquals(listOf("post"), notice.effects)
+        }
     }
 
     @Test fun supersededByNewStartDoesNotPost() {
