@@ -59,8 +59,9 @@ Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-k
   three single-space printable ASCII fields, at most 12 KiB, whose host is the OpenSSH normalization of the
   lowercased dialed `host` (bare for port 22, `[host]:port` otherwise, at most 300 characters) and whose type and key blob match
   `keyType`. Anything else is rejected and never shown. Existing kinds are unchanged.
-- The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace, with
-  FLAG_SECURE. Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
+- The dialog ("New server") shows `host:port`, the key type and the full fingerprint in monospace. The dialog
+  sets `SecureFlagPolicy.SecureOn` on its own window (FLAG_SECURE on the dialog only; the activity window is
+  not made secure). Trust sends exactly `["accept"]` through `VpnAuthEndpoint.reply`; Cancel and dismiss call
   `cancelAuth`. Rejections use the existing failed states.
 - Persistence: a successful `ReplyAuth` is final in Core even if a timeout, Stop or network change follows,
   so the line is persisted if and only if `ReplyAuth` returned success. After Core accepts `["accept"]`, `AuthAttempt` (service side) passes the `knownHostsLine` of the

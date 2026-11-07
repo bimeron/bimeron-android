@@ -22,7 +22,9 @@ import androidx.compose.ui.window.DialogProperties
 
 /** Host serializes feed/reply/cancel on Main and invalidates on stop.
  * Create one controller per SSH session; never reuse across sessions or recreation. At most eight requests
- * are admitted; retired IDs remain protected until disposal. Host must protect the window with FLAG_SECURE.
+ * are admitted; retired IDs remain protected until disposal. [SshAuthenticationDialog] protects its own dialog
+ * window: it sets `SecureFlagPolicy.SecureOn` (FLAG_SECURE on the dialog window only); the host activity
+ * window is not made secure.
  * A submitted request stays visible until the next feed replaces or withdraws it: busy after an accepted reply,
  * [replyRejected] after a rejected one. After a rejection only Cancel is offered; otherwise only the next prompt
  * or Core's own per-prompt timeout moves the attempt forward. A rejected cancel keeps the request visible with
