@@ -49,8 +49,9 @@ only through exactly this path. It must not change; a different path builds a wo
 AAR with a different hash.
 
 The helper creates the symlink and removes it in a `finally` block, also on SIGINT,
-SIGTERM and SIGHUP, but only if it is still the symlink it created (same device and
-inode, not just the same target). If `/var/tmp/bimeron-core-src` already exists in any
+SIGTERM and SIGHUP, but only if it is still the symlink it created: it holds the link
+open for the whole run, so a replacement cannot reuse its inode number (ext4 reuses
+freed inode numbers at once), and compares device, inode, ctime and target. If `/var/tmp/bimeron-core-src` already exists in any
 form (a real directory, or a symlink left by a crashed or still-running rebuild), the
 helper stops without touching it. Check that no rebuild is running, then remove a
 stale symlink with `rm /var/tmp/bimeron-core-src`.

@@ -7,11 +7,14 @@ from pathlib import Path
 import re
 import runpy
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
+from unittest import mock
 
 HELPER = Path(__file__).with_name("rebuild_core_aar.py")
 helper = runpy.run_path(str(HELPER), run_name="rebuild_core_aar")
@@ -53,9 +56,13 @@ class RebuildTests(unittest.TestCase):
         self.make_source(self.root / "physical" / "source")
         self.ndk = self.root / "sdk" / "ndk" / "27.1.12297006"
         self.ndk.mkdir(parents=True)
-        self.canonical = self.root / "canonical"
-        self.prefix = self.root / "out" / "build"
-        self.prefix.parent.mkdir()
+        (self.root / "out").mkdir()
+        self.fresh_paths("build")
+
+    def fresh_paths(self, name):
+        """Own canonical path and output prefix, so subtests cannot see each other's leftovers."""
+        self.canonical = self.root / f"canonical-{name}"
+        self.prefix = self.root / "out" / name
 
     def make_source(self, path):
         (path / "scripts").mkdir(parents=True)
@@ -80,6 +87,20 @@ class RebuildTests(unittest.TestCase):
             (output / "bimeron-core.aar").write_bytes(payload)
         return run
 
+    def pinned_fds(self, path):
+        """Open descriptors on the symlink at path itself (not its target)."""
+        info = os.lstat(path)
+        found = []
+        for fd in range(256):
+            try:
+                opened = os.fstat(fd)
+            except OSError:
+                continue
+            if stat.S_ISLNK(opened.st_mode) and (opened.st_dev, opened.st_ino) == (
+                    info.st_dev, info.st_ino):
+                found.append(fd)
+        return found
+
     def test_canonical_path_is_fixed(self):
         self.assertEqual(helper["CANONICAL"], Path("/var/tmp/bimeron-core-src"))
 
@@ -87,13 +108,21 @@ class RebuildTests(unittest.TestCase):
         calls = []
         inner = self.fake_run(calls)
 
+        pins = []
+
         def checking_run(command, cwd, env, **kwargs):
             self.assertTrue(self.canonical.is_symlink())
             self.assertEqual(os.readlink(self.canonical), str(self.source.resolve()))
+            pins.append(self.pinned_fds(self.canonical))
             inner(command, cwd, env, **kwargs)
 
         self.run_helper(checking_run, self.base_env(PWD="/elsewhere"))
         self.assertEqual(len(calls), 2)
+        # The helper holds one descriptor on its symlink for the whole run, then closes it.
+        self.assertEqual(len(pins[0]), 1)
+        self.assertEqual(pins[0], pins[1])
+        with self.assertRaises(OSError):
+            os.fstat(pins[0][0])
         for number, (command, cwd, env, kwargs) in enumerate(calls, 1):
             self.assertEqual(command, ["sh", "scripts/build-android.sh"])
             self.assertEqual(cwd, str(self.canonical))
@@ -127,6 +156,7 @@ class RebuildTests(unittest.TestCase):
         git(repo, "tag", "v9.9.9")
         for source in (repo / "nested" / "source", repo):
             with self.subTest(source=source.name):
+                self.fresh_paths(f"version-{source.name}")
                 self.make_source(source)
                 # Positive control: without the helper's env the tag is found.
                 found = subprocess.run(["sh", "-c", DESCRIBE], cwd=source, env=GIT_SETUP_ENV,
@@ -141,10 +171,6 @@ class RebuildTests(unittest.TestCase):
                 self.run_helper()
                 for number in (1, 2):
                     self.assertEqual(Path(f"{self.prefix}-{number}/version").read_text(), "")
-                    Path(f"{self.prefix}-{number}.log").unlink()
-                    for item in Path(f"{self.prefix}-{number}").iterdir():
-                        item.unlink()
-                    Path(f"{self.prefix}-{number}").rmdir()
 
     def test_output_affecting_caller_env_is_removed_or_pinned(self):
         calls = []
@@ -228,24 +254,73 @@ class RebuildTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.canonical))
 
     def test_replaced_symlink_is_left_alone(self):
-        # Same target string, different inode: a target comparison would remove it.
+        # Real filesystem. Same target string: a target comparison alone would remove it.
+        # On ext4 the replacement gets the freed inode number unless the helper pins
+        # its symlink, so this also checks the pin on Linux.
         for target in (self.root / "other-run", self.source.resolve()):
             with self.subTest(target=target.name):
+                self.fresh_paths(f"replaced-{target.name}")
+                seen = {}
+
                 def hijacked_run(command, cwd, env, **kwargs):
+                    seen["ours"] = os.lstat(self.canonical)
                     self.canonical.unlink()
                     self.canonical.symlink_to(target, target_is_directory=True)
+                    seen["replacement"] = os.lstat(self.canonical)
                     raise subprocess.CalledProcessError(1, command)
 
                 with self.assertRaises(subprocess.CalledProcessError):
                     self.run_helper(hijacked_run)
+                ours, replacement = seen["ours"], seen["replacement"]
+                self.assertNotEqual((replacement.st_dev, replacement.st_ino),
+                                    (ours.st_dev, ours.st_ino), "inode reused despite the pin")
                 self.assertEqual(os.readlink(self.canonical), str(target))
-                self.canonical.unlink()
-                for number in (1, 2):
-                    Path(f"{self.prefix}-{number}.log").unlink(missing_ok=True)
+
+    def test_inode_reuse_is_not_mistaken_for_ownership(self):
+        # Filesystem-independent: after the replacement, lstat reports our device and
+        # inode (as ext4 does when the number is reused), with or without our ctime.
+        real_lstat = os.lstat
+        cases = (  # name, replacement target, ctime shift, expected to be removed
+            ("new-ctime-same-target", self.source.resolve(), 1, False),
+            ("same-ctime-other-target", self.root / "other-run", 0, False),
+            # Control: identical in every compared field, so it must be treated as ours.
+            # This is the residual risk the pin exists for; it shows the fake is used.
+            ("indistinguishable", self.source.resolve(), 0, True),
+        )
+        for name, target, shift, removed in cases:
+            with self.subTest(case=name):
+                self.fresh_paths(f"reuse-{name}")
+                canonical = str(self.canonical)
+                fake = {}
+
+                def faking_lstat(path, *args, **kwargs):
+                    info = real_lstat(path, *args, **kwargs)
+                    if "ours" not in fake or os.fspath(path) != canonical:
+                        return info
+                    ours = fake["ours"]
+                    return types.SimpleNamespace(
+                        st_mode=info.st_mode, st_dev=ours.st_dev, st_ino=ours.st_ino,
+                        st_ctime_ns=ours.st_ctime_ns + shift)
+
+                def hijacked_run(command, cwd, env, **kwargs):
+                    ours = real_lstat(self.canonical)
+                    self.canonical.unlink()
+                    self.canonical.symlink_to(target, target_is_directory=True)
+                    fake["ours"] = ours
+                    raise subprocess.CalledProcessError(1, command)
+
+                with mock.patch.object(os, "lstat", faking_lstat):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        self.run_helper(hijacked_run)
+                if removed:
+                    self.assertFalse(os.path.lexists(self.canonical))
+                else:
+                    self.assertEqual(os.readlink(self.canonical), str(target))
 
     def test_signal_in_process_unlinks_and_restores_handlers(self):
         for number in (signal.SIGTERM, signal.SIGHUP):
             with self.subTest(signal=number.name):
+                self.fresh_paths(f"signal-{number.name}")
                 before = signal.getsignal(number)
 
                 def signalled_run(command, **kwargs):
@@ -258,7 +333,6 @@ class RebuildTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, 128 + number)
                 self.assertFalse(os.path.lexists(self.canonical))
                 self.assertIs(signal.getsignal(number), before)
-                Path(f"{self.prefix}-1.log").unlink()
 
     def test_external_signal_during_real_build_unlinks(self):
         driver = ("import runpy, sys\n"
