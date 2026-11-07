@@ -34,13 +34,34 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 /**
- * [baseRevision] is the store revision [profile] was read at when the editor opened; null means the
- * draft has no update authority and any save or delete of it conflicts. [editGeneration] advances on
- * every text change, pending-protocol-edit toggle and undo so late results can detect a newer state.
+ * The edit conflict shown over an editor whose save did not commit. Held by its [EditorDraft], so it
+ * disappears with the draft when the editor is closed or replaced.
  */
-class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = null) {
+sealed interface EditorConflict {
+    /** The stored profile changed: [merge] rebases [mine] (the draft text at save time) onto [latest]. */
+    class Changed(val latest: StoredProfile, val mine: String, val merge: ProfileMerge.Result) : EditorConflict
+    /** The stored profile was deleted ([deleted]) or cannot be read: only saving as a new profile is offered. */
+    data class Gone(val deleted: Boolean) : EditorConflict
+}
+
+/**
+ * [baseRevision] is the store revision [profile] was read at when the editor opened; null means the
+ * draft has no update authority and any save or delete of it conflicts. Only an explicit [rebase] or
+ * [reload] advances both to the latest stored profile. [editGeneration] advances on every text change,
+ * pending-protocol-edit toggle, undo, rebase and reload so late results can detect a newer state.
+ */
+class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
+    var profile by mutableStateOf(profile)
+        private set
+    var baseRevision: ProfileRevision? = baseRevision
+        private set
     var editGeneration = 0L
         private set
+    /** Advanced by [rebase] and [reload]; the editor keys its form-local state on it. */
+    var session by mutableIntStateOf(0)
+        private set
+    /** The conflict panel shown for this draft, if any. Main-thread owned. */
+    var conflict by mutableStateOf<EditorConflict?>(null)
     val resources = SshDraftResources(runCatching { java.util.UUID.fromString(profile.id) }.getOrElse { java.util.UUID.randomUUID() })
     fun importKey(kind: SshProfileResources.Kind, token: SshProfileResources.StagedToken): Boolean {
         if (rawInvalid) return false
@@ -93,6 +114,40 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
         catch (e: ProfileError) { rawInvalid = true; failed(e) }
     }
     fun configurationChanged() = document.effective() != ConfigDocument.parse(profile.text).effective()
+
+    /**
+     * Applies the user's choices to a [EditorConflict.Changed] conflict: the draft text becomes the merged
+     * text and its base becomes the latest stored profile and revision, so the next save compares against
+     * it. Nothing is saved. Returns false, changing nothing, while a conflict is unresolved or if the
+     * draft text changed since the merge was computed.
+     */
+    fun applyMerge(choices: Map<MergeField, MergeChoice>): Boolean {
+        val pending = conflict as? EditorConflict.Changed ?: return false
+        if (!pending.merge.resolved(choices) || source.text != pending.mine || pending.latest.id != profile.id) return false
+        update(TextFieldValue(pending.merge.resolve(choices)))
+        rebase(pending.latest)
+        return true
+    }
+
+    /** Discards the draft's edits and continues from [latest], the profile as stored now, at its revision. */
+    fun reload(latest: StoredProfile) {
+        require(latest.id == profile.id)
+        source = TextFieldValue(latest.text)
+        try { document = ConfigDocument.parse(latest.text); rawInvalid = false; error = null }
+        catch (e: ProfileError) { rawInvalid = true; failed(e) }
+        rebase(latest)
+    }
+
+    /** Undo does not cross a new base; imports stay owned by [resources] until the draft is disposed. */
+    private fun rebase(latest: StoredProfile) {
+        history.clear()
+        pendingEdits = false
+        profile = latest.profile
+        baseRevision = latest.revision
+        conflict = null
+        editGeneration++
+        session++
+    }
 }
 
 @Composable fun ProfileEditor(model: AppModel, profile: Profile, busy: Boolean, saveError: String?, vpn: VpnState, onBack: () -> Unit) {
@@ -111,6 +166,8 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
     val protection by VpnLive.protection.collectAsStateWithLifecycle()
     val locked = busy || draft.validating || vpn.state in setOf("permission", "connecting", "reconnecting", "stopping")
     fun leave() { model.editorDraft = null; model.clearError(); onBack() }
+    val conflictMessages = setOf(stringResource(R.string.profile_conflict_review), stringResource(R.string.profile_deleted_elsewhere),
+        stringResource(R.string.profile_conflict_unreadable))
     fun back() { if (!locked) { if (draft.dirty) discard = true else leave() } }
     fun validate(save: Boolean) {
         if (locked || draft.pendingProtocolEdits) return
@@ -150,8 +207,10 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
             }
         }
         val message = draft.error ?: draft.parseError?.text(context) ?: saveError
-        if (message != null) Text(if (!protected || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_deleted_elsewhere) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+        if (message != null) Text(if (!protected || message in conflictMessages || message == stringResource(R.string.profile_edit_conflict) || message == stringResource(R.string.profile_no_longer_exists) || message == stringResource(R.string.editor_validated) || message == stringResource(R.string.protocol_form_invalid) || message == stringResource(R.string.other_uri_invalid) || message == stringResource(R.string.shadowtls_invalid)) message else stringResource(R.string.protocol_form_failed), color = if (message == stringResource(R.string.editor_validated)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
         if (locked) LinearProgressIndicator(Modifier.fillMaxWidth())
+        // A rebase or reload replaces the draft's base: form-local state (reveals, pending form edits) starts over.
+        key(draft.session) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             val doc = draft.document
             when (draft.tab) {
@@ -261,12 +320,18 @@ class EditorDraft(val profile: Profile, val baseRevision: ProfileRevision? = nul
                 }
             }
         }
+        }
     }
     }
     if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text(stringResource(R.string.editor_discard_title)) }, text = { Text(stringResource(R.string.editor_discard_message)) },
         confirmButton = { TextButton(onClick = { leave() }) { Text(stringResource(R.string.editor_discard)) } }, dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.editor_continue_editing)) } })
     if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text(stringResource(R.string.delete_confirm)) }, text = { if (vpn.activeProfileId == profile.id) Text(stringResource(R.string.delete_active_warning)) },
         confirmButton = { TextButton(onClick = { delete = false; model.delete(profile.id) { leave() } }) { Text(stringResource(R.string.delete)) } }, dismissButton = { TextButton(onClick = { delete = false }) { Text(stringResource(R.string.cancel)) } })
+    draft.conflict?.let { conflict ->
+        // Operation failures use the same protected-profile wording as the editor's message line.
+        val failure = saveError?.takeIf { it !in conflictMessages }?.let { if (protected) stringResource(R.string.protocol_form_failed) else it }
+        EditorConflictDialog(model, draft, conflict, locked, failure) { leave() }
+    }
 }
 
 @Composable private fun EditorHint(text: String) { Text(text, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
