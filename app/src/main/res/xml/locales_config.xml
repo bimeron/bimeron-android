@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13+ per-app language list (Settings > Apps > Bimeron > Language), referenced as android:localeConfig.
+     Regional tags make each entry a single tap; a bare language tag opens a region sub-picker.
+     English is the default, unqualified locale (values/); Russian is values-ru/. Any region of a listed
+     language resolves to the same resources. Keep the languages in sync with appLocaleFilters in
+     app/build.gradle.kts: LocaleConfigTest fails when they diverge. -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en-US"/>
+    <locale android:name="ru-RU"/>
+</locale-config>

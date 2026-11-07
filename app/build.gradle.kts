@@ -40,6 +40,12 @@ if (requireReleaseSigning && releaseSigning.isEmpty()) {
     error("BIMERON_REQUIRE_RELEASE_SIGNING is set but ${releaseSigningNames.joinToString()} are not set")
 }
 
+// Languages packaged in the APK. aapt2 drops every other library translation (Compose/Material ship ~80).
+// AGP 8.7 has no androidResources.localeFilters (added in AGP 8.9), so this goes to resourceConfigurations.
+// The per-app language list is hand-written in res/xml/locales_config.xml; LocaleConfigTest fails when its
+// languages differ from these filters.
+val appLocaleFilters = listOf("en", "ru")
+
 android {
     namespace = "org.bimeron.app"
     compileSdk = 34
@@ -50,6 +56,7 @@ android {
         versionCode = bimeronVersionCode
         versionName = bimeronVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        resourceConfigurations += appLocaleFilters
     }
     signingConfigs {
         if (releaseSigning.isNotEmpty()) {
@@ -81,17 +88,20 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    // Android 13+ per-app language settings: AGP writes res/xml/_generated_res_locale_config.xml from the
-    // app's locale-qualified resource dirs (values/ = en via resources.properties, values-ru/ = ru) and
-    // references it as android:localeConfig in the merged manifest. LocaleConfigTest pins the list.
-    androidResources { generateLocaleConfig = true }
+    // Android 13+ per-app language settings use the hand-written android:localeConfig="@xml/locales_config"
+    // (regional tags, so the picker has no region sub-step). AGP must not generate a second one.
+    androidResources { generateLocaleConfig = false }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
         // Keep libgojni.so stored uncompressed and 16 KiB page-aligned in the APK (zipalign -P 16).
         jniLibs.useLegacyPackaging = false
     }
     // Robolectric renders Compose semantics for JVM accessibility checks (A11y*Test).
-    testOptions { unitTests.isIncludeAndroidResources = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // LocaleConfigTest compares the effective filters (not the source text) with locales_config.xml.
+        unitTests.all { it.systemProperty("bimeron.resourceConfigurations", defaultConfig.resourceConfigurations.sorted().joinToString(",")) }
+    }
 }
 
 dependencies {
