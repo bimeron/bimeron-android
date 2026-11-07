@@ -472,7 +472,16 @@ private fun authCancel(token: Long?): suspend (String, String) -> Boolean = { s,
     }
 }
 
-private fun profileProtocol(profile: Profile): String = when (profile.protocol.uppercase()) { "SS", "SSCONF" -> "Shadowsocks"; else -> profile.protocol }
+/**
+ * Display label of a profile row. ssconf is written in lowercase, also for a generic `Key` holding an ssconf
+ * link, as in the editor (display only; the stored key is unchanged).
+ */
+internal fun profileProtocol(profile: Profile): String = when (profile.protocol.uppercase()) {
+    "SS" -> "Shadowsocks"
+    "SSCONF" -> "ssconf"
+    "KEY" -> runCatching { SsConfForms.displayType(ConfigDocument.parse(profile.text)) }.getOrNull() ?: profile.protocol
+    else -> profile.protocol
+}
 
 @Composable internal fun ConnectionCard(chosen: Profile?, vpn: VpnState, onPower: () -> Unit) {
     val active = vpn.state in setOf("connected", "connecting", "reconnecting", "permission")

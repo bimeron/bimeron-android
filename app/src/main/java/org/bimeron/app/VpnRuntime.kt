@@ -35,7 +35,6 @@ enum class VpnErrorCode(@StringRes val messageRes: Int) {
     SSCONF_NETWORK_UNAVAILABLE(R.string.vpn_error_ssconf_network_unavailable),
     SSCONF_FETCH_FAILED(R.string.vpn_error_ssconf_fetch_failed),
     SSCONF_SNAPSHOT_INVALID(R.string.vpn_error_ssconf_snapshot_invalid),
-    SSCONF_CONSENT_REQUIRED(R.string.vpn_error_ssconf_consent_required),
     START_FAILED(R.string.vpn_error_start_failed),
     STOP_FAILED(R.string.vpn_error_stop_failed),
 }
@@ -560,7 +559,8 @@ internal interface RecoveryStartPort {
     val destroyed: Boolean
     fun postNotification()
     fun cancelNotification()
-    fun recordSkip()
+    /** Journals the skip with a fixed [message]. */
+    fun recordSkip(@StringRes message: Int)
     fun publishSkipped(token: Long)
 }
 
@@ -584,8 +584,9 @@ internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {
  * Plans a start. A user start is never read or classified here. A recovery start (anything but the
  * explicit user START) reads the profile once, classifies that read off Main on [classifier], and
  * proceeds only when the profile is positively non-interactive: recovery never shows UI, so a possible
- * auth prompt skips the start instead (§6, §11.14). The proceeding plan carries the classified input,
- * so the session starts exactly what was classified.
+ * auth prompt skips the start instead (§6, §11.14). An ssconf profile without a persisted snapshot is
+ * skipped the same way, because a recovery never fetches (§7.2). The proceeding plan carries the classified
+ * input, so the session starts exactly what was classified.
  */
 internal suspend fun planStart(
     recovery: Boolean,
@@ -601,12 +602,13 @@ internal suspend fun planStart(
     currentCoroutineContext().ensureActive()
     if (port.destroyed) return StartPlan.Destroyed
     if (!VpnLive.gate.accepts(token)) return StartPlan.Superseded
-    if (!interactive && input != null) return StartPlan.Proceed(input)
+    val noSnapshot = input != null && recoveryLacksSnapshot(input)
+    if (!interactive && input != null && !noSnapshot) return StartPlan.Proceed(input)
     port.clearRecovery()
     currentCoroutineContext().ensureActive()
     if (port.destroyed) return StartPlan.Destroyed
     port.postNotification()
-    port.recordSkip()
+    port.recordSkip(if (!interactive && noSnapshot) R.string.journal_recovery_ssconf_unavailable else R.string.journal_recovery_needs_user)
     port.publishSkipped(token)
     return StartPlan.Skipped
 }
@@ -627,6 +629,15 @@ internal suspend fun reuseClassifiedInput(input: SessionInput, id: String, token
  * The session's input: a recovery start reuses its [classified] read and never calls [read]; a user
  * start (null [classified]) performs its single [read]. There is no other path to a session input.
  */
+/**
+ * A recovery never fetches (§7.2), so an ssconf profile without a persisted snapshot cannot start unattended
+ * and is skipped like a possibly interactive one. A persisted body that Core rejects is caught by the session.
+ */
+internal fun recoveryLacksSnapshot(input: SessionInput): Boolean = input.ssconf != null && input.snapshot == null
+
+/** A start is a recovery exactly when [planStart] handed the session its classified read; a user start has none. */
+internal fun isRecoveryStart(classified: SessionInput?): Boolean = classified != null
+
 internal suspend fun sessionInputFor(
     classified: SessionInput?,
     id: String,

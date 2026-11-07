@@ -19,6 +19,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -27,7 +28,8 @@ import org.junit.runner.RunWith
  * service's snapshot step ([loadSessionSnapshot], exactly as runSession calls it) with a real
  * [ProfileStore] in a private test directory and real native Core validation. The service itself is
  * not started, so no Session, TUN or consent is involved; a fetch is either the real [fetchSSConf]
- * (which must never run) or a counting fake that returns a valid body.
+ * (which must never run) or a counting fake that returns a valid body. A recovery start never fetches;
+ * a user connect always fetches once (see [SSConfConnectFetchTest] for the bound network).
  */
 @RunWith(AndroidJUnit4::class)
 class SnapshotStartTest {
@@ -54,7 +56,10 @@ class SnapshotStartTest {
     }
 
     /** One snapshot step with the attempt token, sampling the lease observer count throughout. */
-    private fun attempt(fetch: suspend (String) -> ByteArray): Pair<org.bimeron.core.androidcore.SSConfSnapshot, Int> =
+    private fun attempt(
+        recovery: Boolean,
+        fetch: suspend (String) -> ByteArray,
+    ): Pair<org.bimeron.core.androidcore.SSConfSnapshot, Int> =
         runBlocking(Dispatchers.Default) {
             val token = VpnLive.gate.next()
             val maxObservers = AtomicInteger(SSConfNetworkLease.observerCount)
@@ -63,7 +68,7 @@ class SnapshotStartTest {
             }
             val snapshot = try {
                 val input = readSessionInput(store, id.toString(), token)
-                loadSessionSnapshot(store, input, token, fetch)
+                loadSessionSnapshot(store, input, token, recovery, fetch)
             } finally {
                 sampler.cancelAndJoin()
             }
@@ -76,12 +81,12 @@ class SnapshotStartTest {
         Androidcore.newSSConfSnapshot(source, replacement)
     }
 
-    @Test fun validPersistedSnapshotStartsWithoutFetch() = runBlocking {
+    @Test fun recoveryWithValidPersistedSnapshotStartsWithoutFetch() = runBlocking {
         saveProfile()
         persist(valid)
         val state = VpnLive.state.value
         var fetches = 0
-        val (snapshot, observers) = attempt { fetches++; fetchSSConf(context, it) }
+        val (snapshot, observers) = attempt(recovery = true) { fetches++; fetchSSConf(context, it) }
         assertEquals(0, fetches)
         assertEquals(0, observers)
         assertEquals(0, SSConfNetworkLease.observerCount)
@@ -95,7 +100,16 @@ class SnapshotStartTest {
         session.stop()
     }
 
-    @Test fun corruptPersistedSnapshotFetchesExactlyOnceAndReplaces() = runBlocking {
+    @Test fun userConnectWithValidPersistedSnapshotFetchesOnceAndReplaces() = runBlocking {
+        saveProfile()
+        persist(valid)
+        var fetches = 0
+        attempt(recovery = false) { fetched -> assertEquals(source, fetched); fetches++; replacement }
+        assertEquals(1, fetches)
+        assertArrayEquals(replacement, store.readForSession(id.toString()) { true }.snapshot!!.body)
+    }
+
+    @Test fun corruptPersistedSnapshotIsReplacedByTheUserConnectFetch() = runBlocking {
         saveProfile()
         persist(valid)
         val file = File(root, "ssconf/$id.snap")
@@ -103,18 +117,24 @@ class SnapshotStartTest {
         file.writeBytes(bytes.copyOf().also { it[it.size / 2] = (it[it.size / 2].toInt() xor 1).toByte() })
         assertNull(store.readForSession(id.toString()) { true }.snapshot)
         var fetches = 0
-        attempt { fetched -> assertEquals(source, fetched); fetches++; replacement }
+        attempt(recovery = false) { fetched -> assertEquals(source, fetched); fetches++; replacement }
         assertEquals(1, fetches)
         assertArrayEquals(replacement, store.readForSession(id.toString()) { true }.snapshot!!.body)
     }
 
-    @Test fun coreRejectedPersistedSnapshotIsTreatedAsAbsent() = runBlocking {
+    /** A recovery start discards a Core-rejected persisted body and, never fetching, needs the user. */
+    @Test fun coreRejectedPersistedSnapshotIsDiscardedOnRecoveryWithoutFetch() = runBlocking {
         saveProfile()
         persist("not a shadowsocks body".toByteArray())
         assertNotNull(store.readForSession(id.toString()) { true }.snapshot)
         var fetches = 0
-        attempt { fetches++; replacement }
-        assertEquals(1, fetches)
-        assertArrayEquals(replacement, store.readForSession(id.toString()) { true }.snapshot!!.body)
+        try {
+            attempt(recovery = true) { fetches++; replacement }
+            fail("recovery started without a usable snapshot")
+        } catch (failure: SSConfFailure) {
+            assertEquals(VpnErrorCode.RECOVERY_NEEDS_USER, failure.code)
+        }
+        assertEquals(0, fetches)
+        assertNull(store.readForSession(id.toString()) { true }.snapshot)
     }
 }

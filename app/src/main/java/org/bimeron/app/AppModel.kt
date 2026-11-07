@@ -120,18 +120,6 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun deleteAnyway(done: () -> Unit) = coordinator.deleteAnyway(done)
     fun clearError() = coordinator.clearError()
 
-    internal val ssconfRefresh = SSConfRefreshCoordinator(
-        scope = viewModelScope,
-        read = { id, stillValid -> store.readForSession(id, stillValid) },
-        commit = { ticket, body -> store.commitSnapshot(ticket, body) },
-        // Bind-only fetch; it never starts a VPN. Failures carry only a fixed SSConfFailure code.
-        fetch = { source -> fetchSSConf(application, source) },
-        validate = SSConfSnapshots::validate,
-        needsConsent = { android.net.VpnService.prepare(application) != null },
-        offerApply = coordinator::offerApply,
-    )
-    /** Explicit, user-initiated SSConf snapshot refresh for a stored profile. Never starts or reconnects a VPN. */
-    fun refreshSnapshot(profileId: String): kotlinx.coroutines.Job = ssconfRefresh.refresh(profileId)
 
     fun toggleExpanded() { expanded.value = !expanded.value }
     fun collapse() { expanded.value = false }
@@ -325,7 +313,7 @@ internal class AppModelOperations(
      * Offers the reconnect confirmation when [id] is the active profile of a connected or reconnecting
      * session. The user applies it through [applyPending]; nothing reconnects here. Main-thread owned.
      */
-    fun offerApply(id: String): Boolean {
+    private fun offerApply(id: String): Boolean {
         val session = runtime.value
         if (session.state !in setOf("connected", "reconnecting") || session.activeProfileId != id) return false
         applySession = session

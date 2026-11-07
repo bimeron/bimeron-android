@@ -215,7 +215,7 @@ class BimeronVpnService : VpnService() {
         override val destroyed: Boolean get() = this@BimeronVpnService.destroyed
         override fun postNotification() { postRecoveryNotification() }
         override fun cancelNotification() { cancelRecoveryNotification() }
-        override fun recordSkip() { AppEvents.add(R.string.journal_recovery_needs_user, LogLevel.WARNING) }
+        override fun recordSkip(message: Int) { AppEvents.add(message, LogLevel.WARNING) }
         override fun publishSkipped(token: Long) { VpnLive.publish(recoverySkippedState { getString(it) }, token) }
     }
 
@@ -388,7 +388,7 @@ class BimeronVpnService : VpnService() {
             // SSConf: obtain a Core-validated snapshot before any native session, capability or TUN work.
             val session = createCoreSession(
                 snapshot = sessionInput.ssconf?.let {
-                    suspend { sessionSnapshot(sessionInput, token) }
+                    suspend { sessionSnapshot(sessionInput, token, classified) }
                 },
                 ensureAttempt = { ensureSessionAttempt(token) },
                 acquireNative = { NativeCleanupGate.acquire().also { ownsNative = it } },
@@ -486,12 +486,22 @@ class BimeronVpnService : VpnService() {
     }
 
     /**
-     * Reuses the persisted snapshot without network access, or performs one bounded fetch and commits it.
-     * Never refetches a valid snapshot.
+     * A user start performs one bounded bind-only fetch and commits it, falling back to the persisted
+     * snapshot only if the fetch fails. A recovery start ([classified] read, see [isRecoveryStart]) uses the
+     * persisted snapshot without network access; if Core rejects it, the recovery ends like a skipped one:
+     * "Tap to reconnect" notification, journal entry, RECOVERY_NEEDS_USER (the recovery id is cleared on finish).
      */
-    private suspend fun sessionSnapshot(input: SessionInput, token: Long): SSConfSnapshot {
+    private suspend fun sessionSnapshot(input: SessionInput, token: Long, classified: SessionInput?): SSConfSnapshot {
         val store = withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }
-        return loadSessionSnapshot(store, input, token) { source -> fetchSSConf(applicationContext, source) }
+        return try {
+            loadSessionSnapshot(store, input, token, isRecoveryStart(classified)) { source -> fetchSSConf(applicationContext, source) }
+        } catch (failure: SSConfFailure) {
+            if (failure.code == VpnErrorCode.RECOVERY_NEEDS_USER) {
+                postRecoveryNotification()
+                AppEvents.add(R.string.journal_recovery_ssconf_unavailable, LogLevel.WARNING)
+            }
+            throw failure
+        }
     }
 
     private fun updateProtection() {

@@ -7,6 +7,7 @@
     <string name="journal_vpn_permission_denied">VPN permission denied</string>
     <string name="journal_recovery_save_failed">Could not save VPN recovery state</string>
     <string name="journal_recovery_needs_user">VPN was not restored automatically: the profile may need sign-in</string>
+    <string name="journal_recovery_ssconf_unavailable">VPN was not restored automatically: no usable saved ssconf configuration</string>
     <string name="journal_vpn_connecting">VPN connection started</string>
     <string name="journal_vpn_connected">VPN connected</string>
     <string name="journal_vpn_reconnecting">VPN reconnecting</string>
@@ -14,4 +15,5 @@
     <string name="journal_vpn_disconnected">VPN disconnected</string>
     <string name="journal_vpn_failed">VPN error</string>
     <string name="journal_vpn_failed_detail">VPN error: %1$s</string>
+    <string name="journal_ssconf_fallback">ssconf update failed (%1$s); connecting with the saved configuration</string>
 </resources>

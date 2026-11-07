@@ -162,7 +162,7 @@ class EditorSecretMaskingTest {
                 var done = ""
                 var invalid = ""
                 scenario.onActivity { activity ->
-                    sourceLabel = activity.getString(R.string.ssconf_source)
+                    sourceLabel = activity.getString(R.string.editor_key_or_link)
                     done = activity.getString(R.string.editor_done)
                     invalid = activity.getString(R.string.protocol_form_invalid)
                     activity.setContent {
@@ -171,7 +171,7 @@ class EditorSecretMaskingTest {
                         }
                     }
                 }
-                waitNode("masked SSConf source form") { node ->
+                waitNode("masked ssconf link field") { node ->
                     node.isEditable && node.isPassword &&
                         find(node) { it.text?.toString() == sourceLabel } != null
                 }
