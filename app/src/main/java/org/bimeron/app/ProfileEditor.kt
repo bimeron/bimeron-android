@@ -168,6 +168,9 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     var delete by remember { mutableStateOf(false) }
     var reveal by remember(profile.id) { mutableStateOf(false) }
     var rawReveal by remember(profile.id, draft.tab) { mutableStateOf(false) }
+    // The "Key or link" field edits an ssconf link in place. Once the general tab opens on an ssconf form it
+    // stays editable there, even if an edit makes the link unparseable (that is reported as invalid instead).
+    val ssconfLinkOpen = remember(draft, draft.session, draft.tab) { draft.tab == 0 && !SsConfForms.rawOnly(draft.document) }
     val original = ConfigDocument.parse(draft.profile.text)
     val protected = ProtocolForms.protected(draft.document) || ProtocolForms.protected(original) ||
         OtherUriProtocolForms.protected(draft.document) || OtherUriProtocolForms.protected(original) ||
@@ -184,7 +187,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
     fun validate(save: Boolean) {
         if (locked || draft.pendingProtocolEdits) return
         if (ShadowTlsProtocolForm.invalid(draft.document)) { draft.error = context.getString(R.string.shadowtls_invalid); return }
-        if (ProtocolForms.invalid(draft.document) || SsConfForms.invalid(draft.document)) { draft.error = context.getString(R.string.protocol_form_invalid); return }
+        if (ProtocolForms.invalid(draft.document) || SsConfForms.linkInvalid(draft.document, ssconfLinkOpen)) { draft.error = context.getString(R.string.protocol_form_invalid); return }
         if (OtherUriProtocolForms.invalid(draft.document)) { draft.error = context.getString(R.string.other_uri_invalid); return }
         draft.validating = true
         draft.error = null
@@ -229,14 +232,18 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                 0 -> {
                     EditorField(stringResource(R.string.editor_name), doc.value("Profile", "Name"), !locked) { draft.set("Profile", "Name", it) }
                     val source = doc.source()
+                    val editLink = ssconfLinkOpen || !SsConfForms.rawOnly(doc)
                     Text(stringResource(R.string.editor_key_source), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Surface(shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(18.dp)) { Text(stringResource(R.string.editor_type), modifier = Modifier.weight(1f)); Text(ProtocolForms.typeLabel(doc) ?: stringResource(R.string.editor_parameters)) }
+                        Row(Modifier.padding(18.dp)) { Text(stringResource(R.string.editor_type), modifier = Modifier.weight(1f)); Text(SsConfForms.displayType(doc) ?: ProtocolForms.typeLabel(doc) ?: stringResource(R.string.editor_parameters)) }
                     }
                     if (OtherUriProtocolForms.supported(doc)) {
                         OtherUriProtocolSettings(draft, !locked) { draft.pendingProtocolEdits = it }
                     } else if (source != null && source.first != "File") {
-                        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = source.second, onValueChange = {}, readOnly = true, label = { Text(stringResource(R.string.editor_key_or_link)) }, enabled = !locked, modifier = Modifier.fillMaxWidth(),
+                        // Only an ssconf link is editable here, under the key it is stored in; other sources stay read-only.
+                        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface), value = source.second,
+                            onValueChange = { if (editLink) draft.set("AccessKey", source.first, it) }, readOnly = !editLink, singleLine = editLink,
+                            label = { Text(stringResource(R.string.editor_key_or_link)) }, enabled = !locked && !(editLink && draft.rawInvalid), modifier = Modifier.fillMaxWidth(),
                             visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                             trailingIcon = {
@@ -251,7 +258,7 @@ class EditorDraft(profile: Profile, baseRevision: ProfileRevision? = null) {
                                 }
                             })
                     } else EditorHint(stringResource(R.string.editor_source_hint))
-                    if (SsConfForms.supported(doc) || SsConfForms.protected(doc)) SsConfSettings(draft, !locked)
+                    if (editLink || SsConfForms.supported(doc) || SsConfForms.protected(doc)) SsConfSettings(draft, !locked, editLink)
                     else ProtocolSettings(draft, !locked)
                     if (doc.value("AccessKey", "Type").equals("SSH", ignoreCase = true)) {
                         SshKeyImportButtons(draft, !locked && !draft.rawInvalid, model.store.resources,

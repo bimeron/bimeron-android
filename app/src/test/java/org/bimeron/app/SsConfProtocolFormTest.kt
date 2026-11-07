@@ -79,4 +79,27 @@ class SsConfProtocolFormTest {
             assertEquals(original, draft.source.text)
         }
     }
+
+    @Test fun displayTypeIsLowercaseSsconfWithoutChangingStoredKeys() {
+        for (key in listOf("SSConf", "Key")) {
+            val doc = ConfigDocument.parse(text(key))
+            assertEquals("ssconf", SsConfForms.displayType(doc))
+            assertEquals(key, doc.source()!!.first)
+        }
+        assertEquals("ssconf", SsConfForms.displayType(ConfigDocument.parse(text("SSConf", "ssconf://host/\u0001"))))
+        for (source in listOf("Key = ss://example", "Type = ss\nServer = host", "SS = ss://example")) {
+            assertNull(source, SsConfForms.displayType(ConfigDocument.parse("[AccessKey]\n$source\n")))
+        }
+    }
+
+    @Test fun linkInvalidAlsoCoversALinkEditedOutOfTheForm() {
+        val stripped = ConfigDocument.parse(text("Key", "config.example/path"))
+        assertTrue(SsConfForms.rawOnly(stripped))
+        assertFalse(SsConfForms.invalid(stripped))
+        assertTrue(SsConfForms.linkInvalid(stripped, editingLink = true))
+        assertFalse("Outside the link field another source is not an ssconf error", SsConfForms.linkInvalid(stripped, editingLink = false))
+        val valid = ConfigDocument.parse(text("Key"))
+        assertFalse(SsConfForms.linkInvalid(valid, editingLink = true))
+        assertTrue(SsConfForms.linkInvalid(ConfigDocument.parse(text("SSConf", "ssconf://host/a b")), editingLink = false))
+    }
 }

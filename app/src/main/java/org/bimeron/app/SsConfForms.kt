@@ -1,12 +1,8 @@
 package org.bimeron.app
 
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.*
 import java.net.URI
 
 internal object SsConfForms {
@@ -23,6 +19,16 @@ internal object SsConfForms {
         Conf.sources.count { doc.value("AccessKey", it, "\u0000") != "\u0000" } != 1 ||
         doc.value("AccessKey", "Type").isNotEmpty()
 
+    /** Display type of an ssconf source; the stored key ("SSConf" or "Key") is unchanged. */
+    fun displayType(doc: ConfigDocument): String? =
+        if (supported(doc) || doc.source()?.first == "SSConf") "ssconf" else null
+
+    /**
+     * [invalid], plus a link that an edit in the link field ([editingLink]) made unrepresentable as an ssconf
+     * form (e.g. a `Key` without the `ssconf://` prefix), so the field never silently turns into another source.
+     */
+    fun linkInvalid(doc: ConfigDocument, editingLink: Boolean): Boolean = invalid(doc) || editingLink && rawOnly(doc)
+
     // Local URL shape only; resolution and connection remain the core's responsibility.
     fun invalid(doc: ConfigDocument): Boolean {
         if (rawOnly(doc)) return false
@@ -35,30 +41,17 @@ internal object SsConfForms {
     }
 }
 
-@Composable internal fun SsConfSettings(draft: EditorDraft, enabled: Boolean) {
+/**
+ * The link format hint and check under the editor's "Key or link" field, which edits an ssconf link in place
+ * ([editingLink]); otherwise the raw-only notice.
+ */
+@Composable internal fun SsConfSettings(draft: EditorDraft, enabled: Boolean, editingLink: Boolean) {
     val doc = draft.document
-    if (SsConfForms.rawOnly(doc)) {
+    if (!editingLink) {
         Text(stringResource(R.string.ssconf_raw_only))
         TextButton(onClick = { draft.tab = 3 }, enabled = enabled) { Text(stringResource(R.string.ssconf_raw_config)) }
         return
     }
-    val (sourceKey, source) = doc.source() ?: return
-    var reveal by remember(draft, draft.tab, sourceKey) { mutableStateOf(false) }
-    OutlinedTextField(
-        value = source,
-        onValueChange = { draft.set("AccessKey", sourceKey, it) },
-        label = { Text(stringResource(R.string.ssconf_source)) },
-        enabled = enabled && !draft.rawInvalid,
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-        visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            TextButton(onClick = { reveal = !reveal }, enabled = enabled) {
-                Text(stringResource(if (reveal) R.string.ssconf_hide else R.string.ssconf_show))
-            }
-        },
-    )
     Text(stringResource(R.string.ssconf_local_only))
-    if (SsConfForms.invalid(doc)) Text(stringResource(R.string.ssconf_invalid), color = MaterialTheme.colorScheme.error)
+    if (SsConfForms.linkInvalid(doc, editingLink)) Text(stringResource(R.string.ssconf_invalid), color = MaterialTheme.colorScheme.error)
 }

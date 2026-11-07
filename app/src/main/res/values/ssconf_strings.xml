@@ -1,7 +1,4 @@
 <resources>
-    <string name="ssconf_source">SSConf source</string>
-    <string name="ssconf_show">Show source</string>
-    <string name="ssconf_hide">Hide source</string>
     <string name="ssconf_raw_only">Edit this source in the raw configuration.</string>
     <string name="ssconf_raw_config">Raw configuration</string>
     <string name="ssconf_local_only">Only the URL format is checked. Availability and connection are not checked here.</string>
