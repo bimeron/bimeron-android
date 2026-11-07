@@ -92,5 +92,20 @@ class ConfigDocumentTest {
         assertEquals(original, moved.moveRule(2, -2).render())
         assertEquals(a + middle + c + d, doc.removeRule(1).render())
     }
+    @Test fun rulesAreReplacedInPlaceAndSectionsAddedOnce() {
+        val withRules = ConfigDocument.parse(base + rules + "\n[Extra]\nKey = value\n")
+        val other = ConfigDocument.parse(base + "\n[Rule]\n# mine\nDomain = example.net\nAction = block\n").enableRule(0, false)
+        val replaced = withRules.withRules(other.rules)
+        assertEquals(other.rules, replaced.rules)
+        assertTrue(replaced.render().indexOf("example.net") < replaced.render().indexOf("[Extra]"))
+        assertEquals(replaced.render(), ConfigDocument.parse(replaced.render()).render())
+        assertEquals(listOf("# mine"), replaced.comments())
+        assertTrue(ConfigDocument.parse(base).withRules(other.rules).render().endsWith("# bimeron:end-rule"))
+        assertTrue(withRules.withRules(emptyList()).rules.isEmpty())
+        val added = ConfigDocument.parse(base).addSection("Extra")
+        assertTrue("Extra" in added.sections)
+        assertEquals(added.render(), added.addSection("Extra").render())
+        assertEquals(base + "\n[Extra]\n", added.render())
+    }
     private fun assertInvalid(doc: ConfigDocument) { try { doc.validate(); fail("Expected rejection") } catch (_: ProfileError) {} }
 }

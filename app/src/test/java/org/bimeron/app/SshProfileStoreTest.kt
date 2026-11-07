@@ -96,4 +96,23 @@ class SshProfileStoreTest {
         draft.dispose(resources)
         assertFalse(File(token.prepared!!.path).exists())
     }
+
+    /** A saved draft generation must not stay draft-owned when another referenced path is not owned. */
+    @Test fun deleteRemovesSavedKeyEvenWithUnownedKnownHosts() = runBlocking {
+        val resources = SshProfileResources(File(temporary.root.canonicalFile, "resources"))
+        val store = ProfileStore(null, temporary.newFolder("profiles"), resources) {}
+        val id = UUID.randomUUID()
+        val draft = SshDraftResources(id)
+        val placeholder = draft.accept(resources.stage(SshProfileResources.Kind.IDENTITY, "k".byteInputStream()))!!
+        val text = ConfigDocument.parse(Conf.fromKey("Ssh", "ssh://user@example.com:22"))
+            .set("AccessKey", "IdentityFile", placeholder).set("AccessKey", "KnownHostsFile", "/tmp/known_hosts").render()
+        val result = store.compareAndSave(UUID.randomUUID(), id, null, text, draft)
+        assertTrue("$result", result is CommitResult.Committed)
+        draft.dispose(resources)
+        val stored = store.load().first.single()
+        val key = ConfigDocument.parse(stored.text).value("AccessKey", "IdentityFile")
+        assertTrue(File(key).exists())
+        assertTrue(store.compareAndDelete(UUID.randomUUID(), id, stored.revision) is CommitResult.Committed)
+        assertFalse("private key of a deleted profile left on disk", File(key).exists())
+    }
 }

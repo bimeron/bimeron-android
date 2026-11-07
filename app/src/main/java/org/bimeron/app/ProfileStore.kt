@@ -46,9 +46,10 @@ object Conf {
         return try { decoder.decode(ByteBuffer.wrap(bytes)).toString() }
         catch (_: Exception) { throw ProfileError(R.string.profile_error_not_utf8) }
     }
+    const val NAME_LIMIT = 128
     fun validName(name: String): String {
         val value = name.trim()
-        if (value.isEmpty() || value.length > 128 || value.any { it.isISOControl() }) throw ProfileError(R.string.profile_error_invalid_name)
+        if (value.isEmpty() || value.length > NAME_LIMIT || value.any { it.isISOControl() }) throw ProfileError(R.string.profile_error_invalid_name)
         return value
     }
     fun keyField(key: String): String {
@@ -246,6 +247,12 @@ sealed interface CommitResult {
     data class Conflict(val reason: ConflictReason) : CommitResult
 }
 enum class ConflictReason { CHANGED, DELETED, EXISTS, UNREADABLE, STALE_TICKET, SOURCE_CHANGED, SUPERSEDED }
+/** One profile as stored now, read with its revision in one step under the store lock. */
+sealed interface LatestProfile {
+    data class Present(val stored: StoredProfile) : LatestProfile
+    data object Deleted : LatestProfile
+    data object Unreadable : LatestProfile
+}
 
 class ProfileStore internal constructor(
     private val context: Context?, private val directory: File,
@@ -454,6 +461,19 @@ class ProfileStore internal constructor(
             catch (_: Exception) { warning = true; null }
         }.sortedWith(compareBy(java.text.Collator.getInstance()) { it.profile.name })
         list to warning
+    } }
+    /**
+     * The current text, revision and digest of [id] from one read under [guard], classified like the
+     * compare-and-save precondition: a missing file is [LatestProfile.Deleted], anything that cannot be
+     * read or parsed is [LatestProfile.Unreadable].
+     */
+    suspend fun readLatest(id: UUID): LatestProfile = withContext(Dispatchers.IO) { synchronized(guard) {
+        if (!rootValid) return@synchronized LatestProfile.Unreadable
+        if (!java.nio.file.Files.exists(target(id).toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            known.remove(id)
+            return@synchronized LatestProfile.Deleted
+        }
+        try { LatestProfile.Present(read(id).first) } catch (_: Exception) { LatestProfile.Unreadable }
     } }
     suspend fun readForSession(id: String, stillValid: () -> Boolean): SessionInput = withContext(Dispatchers.IO) { synchronized(guard) {
         try {
