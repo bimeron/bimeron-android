@@ -25,8 +25,10 @@ class EditorDraftRevisionTest {
     private inner class Fixture(parent: CoroutineScope) {
         val job = SupervisorJob(parent.coroutineContext[Job])
         val scope = CoroutineScope(parent.coroutineContext + job)
-        val resources = SshProfileResources(File(temp.root.canonicalFile, UUID.randomUUID().toString()))
-        val store = ProfileStore(null, temp.newFolder(), resources) {}
+        // The production layout: SSH imports under <files root>/ssh-resources, beside the profiles.
+        val filesRoot = File(temp.root.canonicalFile, UUID.randomUUID().toString())
+        val resources = SshProfileResources(File(filesRoot, "ssh-resources"))
+        val store = ProfileStore(null, File(filesRoot, "profiles").apply { mkdirs() }, resources) {}
         val runtime = MutableStateFlow(VpnState())
         var loadHook: suspend () -> Unit = {}
         var commitHook: suspend () -> Unit = {}

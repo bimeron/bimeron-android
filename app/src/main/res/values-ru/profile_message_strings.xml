@@ -47,4 +47,7 @@
     <string name="profile_added">Профиль добавлен</string>
     <string name="profile_imported">Профиль импортирован</string>
     <string name="ssh_error_prepare_files">Не удалось подготовить SSH-файлы</string>
+    <string name="ssh_files_not_imported">Файлы ключа SSH и known_hosts нужно импортировать в этот профиль. Используйте кнопки импорта.</string>
+    <string name="profile_imported_ssh_files_cleared">Профиль импортирован. Импортируйте ключ SSH и known_hosts в редакторе профиля.</string>
+    <string name="ssh_import_uri_files">Нельзя импортировать SSH-ссылки, которые ссылаются на файлы ключа или known_hosts. Удалите из ссылки параметры identity и known_hosts.</string>
 </resources>

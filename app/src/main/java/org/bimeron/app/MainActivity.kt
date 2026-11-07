@@ -206,6 +206,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
     val loading by model.loading.collectAsStateWithLifecycle()
     val warning by model.warning.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
+    val notice by model.notice.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val logs by model.logs.collectAsStateWithLifecycle()
     val expanded by model.expanded.collectAsStateWithLifecycle()
@@ -279,6 +280,7 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
                 confirmButton = { if (canReconnect) TextButton(onClick = { model.applyPending(onApply) }) { Text(stringResource(R.string.reconnect_now)) } },
                 dismissButton = { TextButton(onClick = model::clearPendingApply) { Text(stringResource(R.string.later)) } })
         }
+        notice?.let { text -> if (error == null) AlertDialog(onDismissRequest = model::clearNotice, text = { Text(text) }, confirmButton = { TextButton(onClick = model::clearNotice) { Text("OK") } }) }
         if (error != null && page !in setOf(Page.ADD, Page.EDIT)) AlertDialog(onDismissRequest = model::clearError, title = { Text(stringResource(R.string.vpn_failed)) }, text = { Text(error.orEmpty()) }, confirmButton = { TextButton(onClick = model::clearError) { Text("OK") } })
     }
 }

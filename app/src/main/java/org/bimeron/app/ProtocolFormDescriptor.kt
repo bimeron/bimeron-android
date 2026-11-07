@@ -20,4 +20,6 @@ internal interface ProtocolFormDescriptor {
     val hintRes: Int? get() = null
     fun rawOnly(doc: ConfigDocument): Boolean
     fun invalid(doc: ConfigDocument): Boolean
+    /** A message for field [key] of [doc] in the draft owning [imports], shown at the field; null when none. */
+    fun fieldError(doc: ConfigDocument, key: String, imports: SshDraftResources): Int? = null
 }

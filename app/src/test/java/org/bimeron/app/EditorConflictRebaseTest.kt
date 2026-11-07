@@ -27,9 +27,11 @@ class EditorConflictRebaseTest {
     private inner class Fixture(parent: CoroutineScope) {
         val job = SupervisorJob(parent.coroutineContext[Job])
         val scope = CoroutineScope(parent.coroutineContext + job)
-        val resourcesRoot = File(temp.root.canonicalFile, UUID.randomUUID().toString())
+        // The production layout: SSH imports under <files root>/ssh-resources, beside the profiles.
+        val filesRoot = File(temp.root.canonicalFile, UUID.randomUUID().toString())
+        val resourcesRoot = File(filesRoot, "ssh-resources")
         val resources = SshProfileResources(resourcesRoot)
-        val profilesDir: File = temp.newFolder()
+        val profilesDir: File = File(filesRoot, "profiles").apply { mkdirs() }
         val store = ProfileStore(null, profilesDir, resources) {}
         val runtime = MutableStateFlow(VpnState())
         var loadHook: suspend () -> Unit = {}

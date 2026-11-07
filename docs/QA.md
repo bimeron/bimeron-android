@@ -378,4 +378,10 @@ imported known_hosts unless a step says otherwise, and compare fingerprints with
     the next connect fails with `TRUSTED_KEYS_UNREADABLE` and no dialog; the editor shows "Trusted server keys
     could not be read"; Forget, then connect offers the server again.
 11. In Source config set `IdentityFile = /sdcard/.ssh/id_ed25519` (or an `ssh://...?known_hosts=/sdcard/...`
-    key): connecting fails with `SSH_FILE_OUTSIDE_APP` and nothing is dialed.
+    key): Done shows "SSH key and known_hosts files must be imported into this profile. Use the import
+    buttons." and nothing is saved; typing such a path in the form's key path field shows the field error.
+    A profile stored with such a path before this check (write it with `adb shell run-as`) still opens, fails
+    to save until the files are imported, and connecting it fails with `SSH_FILE_OUTSIDE_APP` with nothing
+    dialed. Export an SSH profile with imported files and import the `.conf`: a new profile is created with
+    empty key paths and the "Import the SSH key and known_hosts in the profile editor" notice. Adding the key
+    `ssh://u@host:22?identity=/sdcard/id` is refused with the link message.

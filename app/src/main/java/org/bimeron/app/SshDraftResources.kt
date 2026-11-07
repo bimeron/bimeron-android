@@ -8,6 +8,11 @@ class SshDraftResources(val profileId: UUID) {
     private val committed = mutableSetOf<SshProfileResources.StagedToken>()
     private val pins = mutableSetOf<String>()
     private var disposed = false
+    /**
+     * Placeholder to kind of this draft's live imports, an immutable snapshot replaced under the draft lock.
+     * The form reads it on Main without the lock, which IO threads hold for file IO during a save.
+     */
+    @Volatile private var kinds: Map<String, SshProfileResources.Kind> = emptyMap()
 
     /**
      * Pins the saved generations that [text] (a base this draft was opened or rebased at) references, so
@@ -22,8 +27,11 @@ class SshDraftResources(val profileId: UUID) {
 
     @Synchronized fun accept(token: SshProfileResources.StagedToken): String? {
         if (disposed) return null
-        return "/bimeron-import/${UUID.randomUUID()}".also { tokens[it] = token }
+        return "/bimeron-import/${UUID.randomUUID()}".also { tokens[it] = token; kinds = kinds + (it to token.kind) }
     }
+
+    /** The kind of this draft's import whose placeholder is [reference], or null when it is not one. Lock-free. */
+    fun importKind(reference: String): SshProfileResources.Kind? = kinds[reference]
 
     @Synchronized fun resolve(text: String, resources: SshProfileResources): String {
         check(!disposed)
@@ -84,6 +92,7 @@ class SshDraftResources(val profileId: UUID) {
 
     @Synchronized fun dispose(resources: SshProfileResources) {
         disposed = true
+        kinds = emptyMap()
         tokens.values.filter { it !in committed }.forEach { token ->
             runCatching { token.prepared?.let(resources::abort) ?: resources.discard(token) }
         }
