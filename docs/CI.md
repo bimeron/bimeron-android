@@ -14,8 +14,9 @@ contents permission and a 45-minute timeout.
    [CORE-AAR.md](CORE-AAR.md) and 16 KiB native alignment of all four ABIs.
 4. Offline script self-tests: `test_verify_core_aar.py`,
    `test_native_alignment.py`, `test_connected_test_runner.py`,
-   `test_rebuild_core_aar.py` (canonical source path handling of the core AAR
-   rebuild helper, without a real build).
+   `test_rebuild_core_aar.py` (canonical source path, signal cleanup, build
+   environment filtering and disabled version detection of the core AAR rebuild
+   helper, without a real build).
 5. Build, unit tests and lint:
 
    ```sh

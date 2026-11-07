@@ -1,28 +1,48 @@
 #!/usr/bin/env python3
-"""Offline checks of the rebuild helper's canonical-path handling; no real build."""
+"""Offline checks of the rebuild helper's canonical path and environment; no real build."""
 import contextlib
 import io
 import os
-import re
 from pathlib import Path
+import re
 import runpy
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
-helper = runpy.run_path(str(Path(__file__).with_name("rebuild_core_aar.py")),
-                        run_name="rebuild_core_aar")
+HELPER = Path(__file__).with_name("rebuild_core_aar.py")
+helper = runpy.run_path(str(HELPER), run_name="rebuild_core_aar")
 rebuild = helper["rebuild"]
+build_env = helper["build_env"]
 
-# Stand-in for the core's build script: same `cd` as the real one, then records
-# the logical working directory and writes a deterministic AAR.
-FAKE_BUILD = """#!/bin/sh
+# The core's version detection, verbatim from scripts/build-android.sh.
+DESCRIBE = "git describe --tags --abbrev=0 --match 'v[0-9]*'"
+
+# Stand-in for the core's build script: same `cd` and version detection as the
+# real one, then records what it saw and writes a deterministic AAR.
+FAKE_BUILD = f"""#!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p "$ANDROID_BUILD_DIR"
 pwd > "$ANDROID_BUILD_DIR/pwd"
-printf 'aar built in %s' "$PWD" > "$ANDROID_BUILD_DIR/bimeron-core.aar"
+if tag=$({DESCRIBE} 2>/dev/null); then version="$tag"; else version=; fi
+printf '%s' "$version" > "$ANDROID_BUILD_DIR/version"
+if [ -n "${{TEST_STARTED_MARKER:-}}" ]; then : > "$TEST_STARTED_MARKER"; exec sleep 30; fi
+printf 'aar built in %s version=%s' "$PWD" "$version" > "$ANDROID_BUILD_DIR/bimeron-core.aar"
 """
+
+# Plain git for fixture setup, independent of the user's git configuration.
+GIT_SETUP_ENV = {"PATH": os.environ.get("PATH", os.defpath), "HOME": "/nonexistent",
+                 "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                           "-c", "commit.gpgsign=false", *args], cwd=cwd, env=GIT_SETUP_ENV,
+                          check=True, capture_output=True, text=True).stdout.strip()
 
 
 class RebuildTests(unittest.TestCase):
@@ -30,41 +50,54 @@ class RebuildTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        self.source = self.root / "physical" / "source"
-        (self.source / "scripts").mkdir(parents=True)
-        (self.source / "scripts/build-android.sh").write_text(FAKE_BUILD)
+        self.make_source(self.root / "physical" / "source")
+        self.ndk = self.root / "sdk" / "ndk" / "27.1.12297006"
+        self.ndk.mkdir(parents=True)
         self.canonical = self.root / "canonical"
         self.prefix = self.root / "out" / "build"
         self.prefix.parent.mkdir()
 
+    def make_source(self, path):
+        (path / "scripts").mkdir(parents=True)
+        (path / "scripts/build-android.sh").write_text(FAKE_BUILD)
+        self.source = path
+
+    def base_env(self, **extra):
+        return {"PATH": os.environ.get("PATH", os.defpath),
+                "ANDROID_NDK_HOME": str(self.ndk), **extra}
+
     def run_helper(self, run=subprocess.run, environ=None):
         with contextlib.redirect_stdout(io.StringIO()):
-            return rebuild(self.source, self.prefix, canonical=self.canonical,
-                           run=run, environ=environ if environ is not None
-                           else {"PATH": os.environ.get("PATH", os.defpath)})
+            return rebuild(self.source, self.prefix, canonical=self.canonical, run=run,
+                           environ=self.base_env() if environ is None else environ)
+
+    def fake_run(self, calls=None, payload=b"same"):
+        def run(command, cwd, env, **kwargs):
+            if calls is not None:
+                calls.append((command, cwd, dict(env), kwargs))
+            output = Path(env["ANDROID_BUILD_DIR"])
+            output.mkdir()
+            (output / "bimeron-core.aar").write_bytes(payload)
+        return run
 
     def test_canonical_path_is_fixed(self):
         self.assertEqual(helper["CANONICAL"], Path("/var/tmp/bimeron-core-src"))
 
     def test_wiring_and_symlink_lifecycle(self):
         calls = []
+        inner = self.fake_run(calls)
 
-        def fake_run(command, cwd, env, **kwargs):
+        def checking_run(command, cwd, env, **kwargs):
             self.assertTrue(self.canonical.is_symlink())
             self.assertEqual(os.readlink(self.canonical), str(self.source.resolve()))
-            calls.append((command, cwd, dict(env), kwargs))
-            output = Path(env["ANDROID_BUILD_DIR"])
-            output.mkdir()
-            (output / "bimeron-core.aar").write_bytes(b"same")
+            inner(command, cwd, env, **kwargs)
 
-        self.run_helper(fake_run, {"PWD": "/elsewhere", "GOFLAGS": "-mod=mod"})
+        self.run_helper(checking_run, self.base_env(PWD="/elsewhere"))
         self.assertEqual(len(calls), 2)
         for number, (command, cwd, env, kwargs) in enumerate(calls, 1):
             self.assertEqual(command, ["sh", "scripts/build-android.sh"])
             self.assertEqual(cwd, str(self.canonical))
             self.assertEqual(env["PWD"], str(self.canonical))
-            self.assertEqual(env["GOFLAGS"], "-trimpath -p=2")
-            self.assertEqual(env["GOTOOLCHAIN"], "local")
             self.assertEqual(env["ANDROID_BUILD_DIR"], f"{self.prefix.resolve()}-{number}")
             self.assertTrue(kwargs["check"])
         self.assertFalse(os.path.lexists(self.canonical))
@@ -85,6 +118,69 @@ class RebuildTests(unittest.TestCase):
                                  check=True, capture_output=True, text=True).stdout.strip()
         self.assertEqual(Path(printed), Path(printed).resolve())
         self.assertNotEqual(printed, str(self.canonical))
+
+    def test_version_detection_disabled_in_tagged_checkout(self):
+        repo = self.root / "tagged-checkout"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "fixture")
+        git(repo, "tag", "v9.9.9")
+        for source in (repo / "nested" / "source", repo):
+            with self.subTest(source=source.name):
+                self.make_source(source)
+                # Positive control: without the helper's env the tag is found.
+                found = subprocess.run(["sh", "-c", DESCRIBE], cwd=source, env=GIT_SETUP_ENV,
+                                       capture_output=True, text=True)
+                self.assertEqual(found.stdout.strip(), "v9.9.9")
+                env = build_env(self.base_env(), self.canonical)
+                blocked = subprocess.run(["sh", "-c", DESCRIBE], cwd=source, env=env,
+                                         capture_output=True, text=True)
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertEqual(blocked.stdout, "")
+                # Through the helper: the build sees no version.
+                self.run_helper()
+                for number in (1, 2):
+                    self.assertEqual(Path(f"{self.prefix}-{number}/version").read_text(), "")
+                    Path(f"{self.prefix}-{number}.log").unlink()
+                    for item in Path(f"{self.prefix}-{number}").iterdir():
+                        item.unlink()
+                    Path(f"{self.prefix}-{number}").rmdir()
+
+    def test_output_affecting_caller_env_is_removed_or_pinned(self):
+        calls = []
+        caller = self.base_env(
+            HOME="/home/fixture", GOPATH="/go", JAVA_HOME="/jdk", ANDROID_HOME="/sdk",
+            BIMERON_VERSION="9.9.9", CGO_CFLAGS="-O0", CGO_CPPFLAGS="-DX", CGO_CXXFLAGS="-O0",
+            CGO_LDFLAGS="-s", GOFLAGS="-mod=mod", GOEXPERIMENT="nocoverageredesign",
+            GOAMD64="v3", GO386="softfloat", GOARM="5", GOOS="linux", GOARCH="amd64",
+            GOWORK="/x/go.work", GOENV="/x/env", GOTOOLCHAIN="go1.99", GOMAXPROCS="64",
+            GIT_WORK_TREE="/x", GIT_DIR="/x/.git", CC="gcc", CXX="g++", OLDPWD="/x")
+        self.run_helper(self.fake_run(calls), caller)
+        env = calls[0][2]
+        for key in ("BIMERON_VERSION", "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS",
+                    "GOEXPERIMENT", "GOAMD64", "GO386", "GOARM", "GOOS", "GOARCH",
+                    "GIT_WORK_TREE", "CC", "CXX", "OLDPWD"):
+            self.assertNotIn(key, env)
+        self.assertEqual({key: env[key] for key in helper["BUILD_ENV"]}, helper["BUILD_ENV"])
+        self.assertEqual(env["GOFLAGS"], "-trimpath -p=2")
+        self.assertEqual(env["GIT_DIR"], "/nonexistent/bimeron-no-git")
+        for key in ("PATH", "HOME", "GOPATH", "JAVA_HOME", "ANDROID_HOME"):
+            self.assertEqual(env[key], caller[key])
+
+    def test_ndk_home_is_resolved_without_trailing_slash(self):
+        link = self.root / "ndk-link"
+        link.symlink_to(self.ndk, target_is_directory=True)
+        for value in (f"{link}/", f"{self.ndk}/", f"{self.ndk}//", str(link)):
+            with self.subTest(value=value):
+                env = build_env(self.base_env(ANDROID_NDK_HOME=value), self.canonical)
+                self.assertEqual(env["ANDROID_NDK_HOME"], os.path.realpath(self.ndk))
+                self.assertFalse(env["ANDROID_NDK_HOME"].endswith("/"))
+
+    def test_missing_ndk_stops_before_linking(self):
+        for environ in ({"PATH": os.defpath}, self.base_env(ANDROID_NDK_HOME=str(self.root / "no"))):
+            with self.assertRaisesRegex(SystemExit, "ANDROID_NDK_HOME"):
+                self.run_helper(lambda *a, **k: self.fail("build must not run"), environ)
+            self.assertFalse(os.path.lexists(self.canonical))
 
     def test_existing_directory_is_never_touched(self):
         self.canonical.mkdir()
@@ -125,25 +221,69 @@ class RebuildTests(unittest.TestCase):
         outputs = iter((b"first", b"second"))
 
         def drifting_run(command, cwd, env, **kwargs):
-            output = Path(env["ANDROID_BUILD_DIR"])
-            output.mkdir()
-            (output / "bimeron-core.aar").write_bytes(next(outputs))
+            self.fake_run(payload=next(outputs))(command, cwd, env, **kwargs)
 
         with self.assertRaisesRegex(SystemExit, "Reproducibility failure"):
             self.run_helper(drifting_run)
         self.assertFalse(os.path.lexists(self.canonical))
 
     def test_replaced_symlink_is_left_alone(self):
-        other = self.root / "other-run"
+        # Same target string, different inode: a target comparison would remove it.
+        for target in (self.root / "other-run", self.source.resolve()):
+            with self.subTest(target=target.name):
+                def hijacked_run(command, cwd, env, **kwargs):
+                    self.canonical.unlink()
+                    self.canonical.symlink_to(target, target_is_directory=True)
+                    raise subprocess.CalledProcessError(1, command)
 
-        def hijacked_run(command, cwd, env, **kwargs):
-            self.canonical.unlink()
-            self.canonical.symlink_to(other, target_is_directory=True)
-            raise subprocess.CalledProcessError(1, command)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.run_helper(hijacked_run)
+                self.assertEqual(os.readlink(self.canonical), str(target))
+                self.canonical.unlink()
+                for number in (1, 2):
+                    Path(f"{self.prefix}-{number}.log").unlink(missing_ok=True)
 
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.run_helper(hijacked_run)
-        self.assertEqual(os.readlink(self.canonical), str(other))
+    def test_signal_in_process_unlinks_and_restores_handlers(self):
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=number.name):
+                before = signal.getsignal(number)
+
+                def signalled_run(command, **kwargs):
+                    os.kill(os.getpid(), number)
+                    time.sleep(5)
+                    self.fail("signal was not handled")
+
+                with self.assertRaises(SystemExit) as raised:
+                    self.run_helper(signalled_run)
+                self.assertEqual(raised.exception.code, 128 + number)
+                self.assertFalse(os.path.lexists(self.canonical))
+                self.assertIs(signal.getsignal(number), before)
+                Path(f"{self.prefix}-1.log").unlink()
+
+    def test_external_signal_during_real_build_unlinks(self):
+        driver = ("import runpy, sys\n"
+                  "from pathlib import Path\n"
+                  "h = runpy.run_path(sys.argv[1], run_name='rebuild_core_aar')\n"
+                  "h['rebuild'](sys.argv[2], sys.argv[3], canonical=Path(sys.argv[4]))\n")
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=number.name):
+                started = self.root / f"started-{number.name}"
+                prefix = self.root / "out" / number.name
+                child = subprocess.Popen(
+                    [sys.executable, "-I", "-c", driver, str(HELPER), str(self.source),
+                     str(prefix), str(self.canonical)],
+                    env=self.base_env(TEST_STARTED_MARKER=str(started)),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.addCleanup(child.kill)
+                deadline = time.monotonic() + 20
+                while not started.exists():
+                    self.assertIsNone(child.poll(), "helper exited before the build started")
+                    self.assertLess(time.monotonic(), deadline, "build did not start")
+                    time.sleep(0.05)
+                self.assertTrue(self.canonical.is_symlink())
+                child.send_signal(number)
+                self.assertEqual(child.wait(timeout=20), 128 + number)
+                self.assertFalse(os.path.lexists(self.canonical))
 
 
 if __name__ == "__main__":

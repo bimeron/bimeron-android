@@ -24,7 +24,12 @@ Build requirements: Go 1.26.9, Android Studio OpenJDK 21.0.3 (runtime/VM build `
 
 ## Rebuilding
 
-The archive can be extracted anywhere. gomobile writes absolute `replace`
+The archive can be extracted into any directory, including one inside a tagged git
+checkout, under these conditions: the build runs through the rebuild helper (which
+disables version detection and pins or strips the variables listed below), with the
+toolchain versions above and the NDK at a path of your choice.
+
+gomobile writes absolute `replace`
 directives for the core module and its three `third_party` forks into its generated
 `go.mod`, and Go records them in the `libgojni.so` build info; `-trimpath` does not
 remove them. The rebuild helper therefore always builds through the fixed symlink
@@ -37,8 +42,9 @@ every `libgojni.so` (the four `replace` paths), so the recorded hash is reproduc
 only through exactly this path. It must not change; a different path builds a working
 AAR with a different hash.
 
-The helper creates the symlink and removes it in a `finally` block, but only if it
-is still the symlink it created. If `/var/tmp/bimeron-core-src` already exists in any
+The helper creates the symlink and removes it in a `finally` block, also on SIGINT,
+SIGTERM and SIGHUP, but only if it is still the symlink it created (same device and
+inode, not just the same target). If `/var/tmp/bimeron-core-src` already exists in any
 form (a real directory, or a symlink left by a crashed or still-running rebuild), the
 helper stops without touching it. Check that no rebuild is running, then remove a
 stale symlink with `rm /var/tmp/bimeron-core-src`.
@@ -71,18 +77,44 @@ git -C "$WORK/repo" fetch origin "$REV"
 CORE_SOURCE="$WORK/repo"
 ```
 
-The helper sets `GOTOOLCHAIN=local`, `GOMAXPROCS=2`, `GOFLAGS='-trimpath -p=2'`
-and `CGO_LDFLAGS='-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'`,
-with no version override. The core builds all four ABIs with `-androidapi=23`.
-`scripts/test_rebuild_core_aar.py` checks the symlink handling and the
-working-directory/`PWD` wiring without a real build.
+Build environment. The helper starts from the caller's environment and:
+
+- removes every `BIMERON_*`, `CGO_*` and `GIT_*` variable, plus `GOFLAGS`,
+  `GOEXPERIMENT`, `GOOS`, `GOARCH`, `GOAMD64`, `GO386`, `GOARM`, `GOARM64`,
+  `GOFIPS140`, `GOENV`, `GOWORK`, `CC`, `CXX` and `OLDPWD`;
+- pins `GOTOOLCHAIN=local`, `GOMAXPROCS=2`, `GOFLAGS='-trimpath -p=2'`,
+  `CGO_LDFLAGS='-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'`,
+  `GOENV=off` (ignore `go env -w` settings) and `GOWORK=off`;
+- disables version detection with `GIT_DIR=/nonexistent/bimeron-no-git`. The core's
+  `build-android.sh` runs `git describe --tags` when `BIMERON_VERSION` is unset, and
+  git discovers repositories from the physical path, not the symlink, so an archive
+  extracted inside a tagged checkout would otherwise stamp `-X bimeron/core.Version`
+  and change the hash. With `BIMERON_VERSION` stripped and `git describe` failing, no
+  version is stamped. As a side effect, Go cannot fetch modules directly over git
+  during the build; use the default module proxy or a warm module cache;
+- passes `ANDROID_NDK_HOME` on as its real path without a trailing slash (and fails
+  if it is not a directory), so the core's `-ffile-prefix-map=$ANDROID_NDK_HOME=/android-ndk`
+  always matches the paths the compiler sees. A symlinked or slash-terminated NDK path
+  therefore builds the same AAR.
+
+Other variables (`PATH`, `HOME`, `JAVA_HOME`, `ANDROID_HOME`, `GOPATH`, `GOCACHE`,
+`GOPROXY`, `TMPDIR` and so on) pass through unchanged. The core builds all four ABIs
+with `-androidapi=23`. `scripts/test_rebuild_core_aar.py` checks the symlink
+handling, signal cleanup, the working-directory/`PWD` wiring, the environment
+filtering, the NDK path normalisation and, in a scratch git repository tagged
+`v9.9.9`, that the version detection finds no tag, all without a real build.
 
 Location independence was checked on one macOS host. Archives of `aefaff4` were
 extracted to `bimeron-artifacts/aar-canonical/src-a/source` and
 `bimeron-artifacts/aar-canonical/deeper/path/src-b/source`, and an archive of
 `d9fd7f4` to `bimeron-artifacts/aar-canonical/other/src-c/source`. All six helper
 builds (two per directory, each directory with its own empty Go build cache) produced
-the hash above, with identical `classes.jar` and `libgojni.so` payloads. `strings` on each
+the hash above, with identical `classes.jar` and `libgojni.so` payloads. After the
+environment hardening, `d9fd7f4` was rebuilt from inside a scratch git checkout tagged
+`v9.9.9` (where `git describe` from the source finds `v9.9.9`), with the caller
+environment polluted by `BIMERON_VERSION=9.9.9`, `CGO_CFLAGS=-O0`, `CGO_LDFLAGS=-s`,
+`GOFLAGS=-mod=mod`, `GOAMD64=v3`, `GO386=softfloat`, `GOEXPERIMENT` and a
+slash-terminated `ANDROID_NDK_HOME`; both builds again produced the hash above. `strings` on each
 `libgojni.so` finds no `/Users/` path and no NDK install path; the only source path
 is `/var/tmp/bimeron-core-src` (the core module and `third_party/apernet-quic-go`,
 `third_party/hysteria-core` and `third_party/quic-go`), and NDK headers appear as
