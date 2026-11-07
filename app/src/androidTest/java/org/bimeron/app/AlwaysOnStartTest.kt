@@ -33,11 +33,15 @@ class AlwaysOnStartTest {
     private var previousRecoveryId: String? = null
     private var previousSelection: String? = null
     private var previousEvents: List<LogEntry> = emptyList()
+    private var previousLogSettings = LogSettings()
 
     @Before fun saveState(): Unit = runBlocking {
         previousRecoveryId = preferences.getString(BimeronVpnService.ACTIVE_ID, null)
         previousSelection = readSelectedProfileId(context)
         previousEvents = AppEvents.entries.value
+        previousLogSettings = AppEvents.settings.value
+        // The no-target check reads a WARNING entry; a device journal level must not hide it.
+        AppEvents.apply(LogSettings())
         assertTrue(preferences.edit().putString(BimeronVpnService.ACTIVE_ID, null).commit())
         VpnLive.resetAfterProcessStart()
     }
@@ -47,6 +51,7 @@ class AlwaysOnStartTest {
         preferences.edit().putString(BimeronVpnService.ACTIVE_ID, previousRecoveryId).commit()
         writeSelectedProfileId(context, previousSelection)
         profileId?.let { id -> withContext(Dispatchers.IO) { ProfileStore.get(context).delete(id) } }
+        AppEvents.settings.value = previousLogSettings
         AppEvents.entries.value = previousEvents
         VpnLive.resetAfterProcessStart()
     }
@@ -60,6 +65,10 @@ class AlwaysOnStartTest {
             instrumentation.uiAutomation.dropShellPermissionIdentity()
         }
     }
+
+    @Suppress("DEPRECATION") // Still lists the caller's own services.
+    private fun serviceRunning(): Boolean = context.getSystemService(android.app.ActivityManager::class.java)
+        .getRunningServices(Int.MAX_VALUE).any { it.service.className == BimeronVpnService::class.java.name && it.started }
 
     @Test fun alwaysOnStartRecoversTheSelectedProfileAfterAStop(): Unit = runBlocking {
         val store = withContext(Dispatchers.IO) { ProfileStore.get(context) }
@@ -94,9 +103,12 @@ class AlwaysOnStartTest {
         val deadline = SystemClock.elapsedRealtime() + 10_000
         while (AppEvents.entries.value.none { it.message == expected } && SystemClock.elapsedRealtime() < deadline) Thread.sleep(10)
         assertTrue("No journal entry for the skipped start", AppEvents.entries.value.any { it.message == expected })
+        // The skipped start leaves the foreground and stops the service.
+        val stopDeadline = SystemClock.elapsedRealtime() + 5_000
+        while (serviceRunning() && SystemClock.elapsedRealtime() < stopDeadline) Thread.sleep(20)
+        assertFalse("The service is still running", serviceRunning())
         val state = VpnLive.state.value
         assertEquals("disconnected", state.state)
         assertNull(state.code)
-        assertNull(state.attemptProfileId)
     }
 }

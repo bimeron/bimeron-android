@@ -230,11 +230,14 @@ class BimeronVpnService : VpnService() {
     }
 
     /**
-     * An always-on start becomes a recovery [Command.Start] for [alwaysOnTarget]. A running session is kept as is
-     * (Android also sends this when always-on is turned on while connected); without a target the start ends quietly.
+     * An always-on start becomes a recovery [Command.Start] for [alwaysOnTarget]. A live session is kept as is
+     * (Android skips the start once connected, but it can arrive while connecting); a failed session that is
+     * still tearing down is replaced. Without a target the start ends with a journal warning.
      */
     private suspend fun resolveAlwaysOn(command: Command.AlwaysOn): Command {
-        if (runJob?.isActive == true) return Command.Invalid(command.startId, reportError = false)
+        val running = runJob?.isActive == true
+        val failed = VpnLive.state.value.state == "failed"
+        if (running && !failed) return Command.Invalid(command.startId, reportError = false)
         val recoveryId = withContext(Dispatchers.IO) {
             getSharedPreferences(RECOVERY, MODE_PRIVATE).getString(ACTIVE_ID, null)
         }
@@ -250,7 +253,7 @@ class BimeronVpnService : VpnService() {
             AppEvents.add(R.string.journal_always_on_no_profile, LogLevel.WARNING)
             return Command.Invalid(command.startId, reportError = false)
         }
-        return Command.Start(id, command.startId, force = false, recovery = true)
+        return Command.Start(id, command.startId, force = running, recovery = true)
     }
 
     private suspend fun consumeCommands() {
