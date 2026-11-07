@@ -1,12 +1,10 @@
 package org.bimeron.app
 
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 
@@ -80,14 +78,16 @@ internal object ShadowTlsProtocolForm {
     ShadowTlsProtocolForm.fields.forEach { field ->
         key(field) {
             var reveal by remember(draft.profile.id) { mutableStateOf(false) }
-            OutlinedTextField(value = doc.value("ShadowTLS", field), onValueChange = { draft.set("ShadowTLS", field, it) },
-                label = { Text(stringResource(if (field == "ServerName") R.string.shadowtls_name else R.string.shadowtls_password)) },
-                enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
-                trailingIcon = { TextButton(onClick = { reveal = !reveal }, enabled = enabled) {
-                    Text(stringResource(if (reveal) R.string.shadowtls_hide else R.string.shadowtls_show))
-                } })
+            SecretInput(SecretKeyboard.Masked) { keyboardOptions ->
+                OutlinedTextField(value = doc.value("ShadowTLS", field), onValueChange = { draft.set("ShadowTLS", field, it) },
+                    label = { Text(stringResource(if (field == "ServerName") R.string.shadowtls_name else R.string.shadowtls_password)) },
+                    enabled = enabled, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = keyboardOptions,
+                    trailingIcon = { TextButton(onClick = { reveal = !reveal }, enabled = enabled) {
+                        Text(stringResource(if (reveal) R.string.shadowtls_hide else R.string.shadowtls_show))
+                    } })
+            }
         }
     }
     if (ShadowTlsProtocolForm.invalid(doc)) Text(stringResource(R.string.shadowtls_invalid), color = MaterialTheme.colorScheme.error)

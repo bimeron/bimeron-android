@@ -9,7 +9,20 @@ internal data class ProtocolField(
     val removable: Boolean = false,
     val options: List<String>? = null,
     val keyboardType: ProtocolKeyboardType = if (secret) ProtocolKeyboardType.PASSWORD else ProtocolKeyboardType.TEXT,
-)
+) {
+    /**
+     * The secret keyboard of this text field, or null for a public one. A field is secret when the form masks
+     * it or asks for a password keyboard, or when the conflict panel classes its key as secret
+     * ([ProfileMerge.isSecret]); masking itself still follows [secret] only.
+     */
+    val secretKeyboard: SecretKeyboard? get() = when {
+        options != null -> null
+        secret || keyboardType == ProtocolKeyboardType.PASSWORD -> SecretKeyboard.Masked
+        !ProfileMerge.isSecret("AccessKey", key) -> null
+        keyboardType == ProtocolKeyboardType.NUMBER -> SecretKeyboard.Number
+        else -> SecretKeyboard.Clear
+    }
+}
 
 /** Protocol hooks run only for structured documents; shared field and endpoint checks live in the facade. */
 internal interface ProtocolFormDescriptor {
