@@ -99,6 +99,11 @@ class A11yLargeFontTest {
         assertFits()
     }
 
+    @Test fun settingsScreenWithNotificationsOff() {
+        show { SettingsPage("system", {}, {}, {}, notificationsOff = true) }
+        assertFits()
+    }
+
     @Test fun journalScreen() {
         show(dark = true) { LogJournalPage(listOf(LogEntry("05.11 10:00:00", str(R.string.permission_denied)))) }
         assertFits()
