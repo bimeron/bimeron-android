@@ -267,7 +267,7 @@ class BimeronVpnService : VpnService() {
                     currentCoroutineContext().ensureActive()
                     if (destroyed) return
                     VpnLive.publish(VpnState("connecting", attemptProfileId = command.id), token)
-                    runJob = scope.launch { runSession(command.id, token, classified) }
+                    runJob = scope.launch { runSession(command.id, token, classified, command.recovery) }
                 }
                 is Command.Stop -> {
                     val token = VpnLive.nextAttempt()
@@ -336,8 +336,11 @@ class BimeronVpnService : VpnService() {
                 (if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) 1 else 0)
         }
 
-    /** [classified] is the recovery start's classified read; a user start passes null and reads here. */
-    private suspend fun runSession(id: String, token: Long, classified: SessionInput?) {
+    /**
+     * [classified] is the recovery start's classified read; a user start passes null and reads here.
+     * [recovery] selects the ssconf snapshot rule: a user start fetches once, a recovery start never fetches.
+     */
+    private suspend fun runSession(id: String, token: Long, classified: SessionInput?, recovery: Boolean) {
         var ownsNative = false
         var current: Session? = null
         var tun: ParcelFileDescriptor? = null
@@ -385,10 +388,10 @@ class BimeronVpnService : VpnService() {
                     } catch (_: Exception) { false }
                 }
             }
-            // SSConf: obtain a Core-validated snapshot before any native session, capability or TUN work.
+            // ssconf: obtain a Core-validated snapshot before any native session, capability or TUN work.
             val session = createCoreSession(
                 snapshot = sessionInput.ssconf?.let {
-                    suspend { sessionSnapshot(sessionInput, token) }
+                    suspend { sessionSnapshot(sessionInput, token, recovery) }
                 },
                 ensureAttempt = { ensureSessionAttempt(token) },
                 acquireNative = { NativeCleanupGate.acquire().also { ownsNative = it } },
@@ -486,12 +489,12 @@ class BimeronVpnService : VpnService() {
     }
 
     /**
-     * Reuses the persisted snapshot without network access, or performs one bounded fetch and commits it.
-     * Never refetches a valid snapshot.
+     * A user start performs one bounded bind-only fetch and commits it, falling back to the persisted
+     * snapshot only if the fetch fails. A recovery start uses the persisted snapshot without network access.
      */
-    private suspend fun sessionSnapshot(input: SessionInput, token: Long): SSConfSnapshot {
+    private suspend fun sessionSnapshot(input: SessionInput, token: Long, recovery: Boolean): SSConfSnapshot {
         val store = withContext(Dispatchers.IO) { ProfileStore.get(applicationContext) }
-        return loadSessionSnapshot(store, input, token) { source -> fetchSSConf(applicationContext, source) }
+        return loadSessionSnapshot(store, input, token, recovery) { source -> fetchSSConf(applicationContext, source) }
     }
 
     private fun updateProtection() {

@@ -178,10 +178,10 @@ class SSConfFetchMappingTest {
             expectFailure(VpnErrorCode.CORE_INCOMPATIBLE) {
                 resolveSessionSnapshot(
                     ticket = SnapshotTicket(java.util.UUID.randomUUID(), source, 1) { true },
-                    stored = null, ensureAttempt = {}, validate = { it.size },
+                    stored = null, recovery = false, ensureAttempt = {}, validate = { it.size },
                     fetch = { fetchSSConf(source, lease.scope, FakeRequestFactory { throw error }) },
                     discard = { _, _ -> fail("discarded") }, commit = { _, _ -> throw AssertionError("committed") },
-                    warn = { fail("warned") },
+                    warn = { fail("warned") }, onFallback = { fail("fell back") },
                 )
             }
             assertEquals(0, lease.openRegistrations)

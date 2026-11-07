@@ -14,4 +14,5 @@
     <string name="journal_vpn_disconnected">VPN отключён</string>
     <string name="journal_vpn_failed">Ошибка VPN</string>
     <string name="journal_vpn_failed_detail">Ошибка VPN: %1$s</string>
+    <string name="journal_ssconf_fallback">Не удалось обновить ssconf (%1$s); подключение с сохранённой конфигурацией</string>
 </resources>
