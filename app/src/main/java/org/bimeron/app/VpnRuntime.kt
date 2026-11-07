@@ -35,7 +35,6 @@ enum class VpnErrorCode(@StringRes val messageRes: Int) {
     SSCONF_NETWORK_UNAVAILABLE(R.string.vpn_error_ssconf_network_unavailable),
     SSCONF_FETCH_FAILED(R.string.vpn_error_ssconf_fetch_failed),
     SSCONF_SNAPSHOT_INVALID(R.string.vpn_error_ssconf_snapshot_invalid),
-    SSCONF_CONSENT_REQUIRED(R.string.vpn_error_ssconf_consent_required),
     START_FAILED(R.string.vpn_error_start_failed),
     STOP_FAILED(R.string.vpn_error_stop_failed),
 }

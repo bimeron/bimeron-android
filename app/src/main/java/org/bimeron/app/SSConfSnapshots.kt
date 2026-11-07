@@ -6,10 +6,6 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.bimeron.core.androidcore.Androidcore
 
 /** Result of [ProfileStore.commitSnapshot]. */
 sealed interface SnapshotCommitResult {
@@ -60,32 +56,6 @@ internal object SSConfSnapshots {
     }
 
     fun decode(id: UUID, bytes: ByteArray): StoredSnapshot? = decodeBound(id, bytes)?.snapshot
-
-    /** A body rejected by size or by Core. Carries no message, cause, source or body. */
-    class InvalidSnapshot : Exception() {
-        val code get() = VpnErrorCode.SSCONF_SNAPSHOT_INVALID
-        override fun fillInStackTrace(): Throwable = this
-    }
-
-    /**
-     * Validates [body] for [source] through Core on IO and discards the resulting handle.
-     * Throws [InvalidSnapshot] for a body outside 1..[MAX_BODY] or any Core rejection; Core error text
-     * is dropped so it can never reach UI or logs. Cancellation and errors (e.g. a missing native
-     * library, a [LinkageError]) are rethrown for the caller to classify.
-     */
-    suspend fun validate(source: String, body: ByteArray) {
-        if (body.size !in 1..MAX_BODY) throw InvalidSnapshot()
-        val owned = body.copyOf()
-        withContext(Dispatchers.IO) {
-            try {
-                Androidcore.newSSConfSnapshot(source, owned)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                throw InvalidSnapshot()
-            }
-        }
-    }
 
     /** Null for anything but an exact, hash-verified v1 file for [id]. */
     fun decodeBound(id: UUID, bytes: ByteArray): Decoded? {

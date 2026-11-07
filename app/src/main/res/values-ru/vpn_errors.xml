@@ -18,7 +18,6 @@
     <string name="vpn_error_ssconf_network_unavailable">Нет доступной сети для SSConf.</string>
     <string name="vpn_error_ssconf_fetch_failed">Не удалось загрузить SSConf.</string>
     <string name="vpn_error_ssconf_snapshot_invalid">Снимок SSConf недействителен.</string>
-    <string name="vpn_error_ssconf_consent_required">Для обновления SSConf требуется разрешение на VPN.</string>
     <string name="vpn_error_start_failed">Не удалось запустить VPN.</string>
     <string name="vpn_error_stop_failed">VPN неожиданно остановлен.</string>
 </resources>

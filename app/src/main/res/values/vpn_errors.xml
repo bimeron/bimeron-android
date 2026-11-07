@@ -18,7 +18,6 @@
     <string name="vpn_error_ssconf_network_unavailable">No network is available for SSConf.</string>
     <string name="vpn_error_ssconf_fetch_failed">Could not fetch SSConf.</string>
     <string name="vpn_error_ssconf_snapshot_invalid">The SSConf snapshot is invalid.</string>
-    <string name="vpn_error_ssconf_consent_required">VPN permission is required to refresh SSConf.</string>
     <string name="vpn_error_start_failed">Could not start VPN.</string>
     <string name="vpn_error_stop_failed">VPN stopped unexpectedly.</string>
 </resources>
