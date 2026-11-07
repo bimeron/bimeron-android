@@ -30,6 +30,16 @@ private val Context.preferences by preferencesDataStore("settings")
 private val themeKey = stringPreferencesKey("theme")
 private val selectedKey = stringPreferencesKey("selected_profile")
 
+/** The profile the user last selected; the single DataStore delegate is shared with [AppModel]. */
+internal suspend fun readSelectedProfileId(context: Context): String? =
+    context.applicationContext.preferences.data.first()[selectedKey]
+
+internal suspend fun writeSelectedProfileId(context: Context, id: String?) {
+    context.applicationContext.preferences.edit { settings ->
+        if (id == null) settings.remove(selectedKey) else settings[selectedKey] = id
+    }
+}
+
 class AppModel(application: Application) : AndroidViewModel(application) {
     private val storeReady = MutableStateFlow(false)
     @Volatile private var initializedStore: ProfileStore? = null
@@ -56,12 +66,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         readLatest = { id -> store.readLatest(UUID.fromString(id)) },
         saveAsNewCommitted = { text, draft, publish -> commits.saveAsNew(text, draft, publish) },
         deleteLatest = { id, expected, publish -> commits.deleteAt(id, expected, publish) },
-        readSelection = { application.preferences.data.first()[selectedKey] },
-        writeSelection = { id ->
-            application.preferences.edit { settings ->
-                if (id == null) settings.remove(selectedKey) else settings[selectedKey] = id
-            }
-        },
+        readSelection = { readSelectedProfileId(application) },
+        writeSelection = { id -> writeSelectedProfileId(application, id) },
         runtime = VpnLive.state,
         stop = {
             application.startService(Intent(application, BimeronVpnService::class.java).setAction(BimeronVpnService.STOP))

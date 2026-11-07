@@ -36,6 +36,20 @@ ANDROID_HOME="$HOME/Library/Android/sdk" \
   skipped the same way, because a recovery never fetches. Non-SSH profiles recover
   as before.
   `RecoverySkipTest` (instrumentation) covers the SSH skip.
+- Always-on VPN: Android starts the always-on app's service with the
+  `android.net.VpnService` action on boot/user unlock, after a package update
+  (`VpnManagerService.onPackageReplaced`) and when always-on is turned on in
+  Settings. That start is a recovery for the interrupted session's ID, or else
+  for the selected profile, so it also connects after an explicit Disconnect. It
+  is classified like any other recovery (an SSH profile shows "Tap to
+  reconnect"), keeps a running session, and without a profile only records a
+  journal warning. `AlwaysOnTargetTest` and `AlwaysOnStartTest` cover it. On the
+  SM-A025F (Android 12) with always-on set and lockdown off, the VPN came up by
+  itself after `adb install -r` and after turning always-on off and on. Android
+  does not restart it after `am force-stop`; it returns on the next trigger
+  above or on Connect. Network changes are not always-on triggers. On this
+  phone, `am crash` while connected did not schedule a sticky restart either
+  (the ServiceRecord stayed without a restart time until the app was opened).
 - On Android 13 (API 33) and later the recovery notification is shown only if the
   user granted the notification permission; without it the post is dropped
   silently and only the in-app state carries `RECOVERY_NEEDS_USER`. See

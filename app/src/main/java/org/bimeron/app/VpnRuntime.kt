@@ -8,6 +8,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
@@ -574,6 +575,14 @@ internal sealed interface StartPlan {
     /** The service was destroyed meanwhile; stop consuming commands. */
     data object Destroyed : StartPlan
 }
+
+/**
+ * The profile an always-on start (`VpnService.SERVICE_INTERFACE`, sent by Android on boot, user unlock,
+ * package update or when always-on is turned on) connects: the interrupted session's recovery id, else
+ * the profile the user last selected. Anything that is not a profile UUID is ignored; null means no target.
+ */
+internal fun alwaysOnTarget(recoveryId: String?, selectedId: String?): String? =
+    sequenceOf(recoveryId, selectedId).firstOrNull { it != null && runCatching { UUID.fromString(it) }.isSuccess }
 
 /** Called for every accepted start: a user start retires a pending "Tap to reconnect" notification. */
 internal fun noteStartCommand(recovery: Boolean, port: RecoveryStartPort) {

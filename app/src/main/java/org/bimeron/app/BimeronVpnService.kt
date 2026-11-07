@@ -63,6 +63,8 @@ class BimeronVpnService : VpnService() {
         /** [recovery] marks any start other than the explicit user [START]; it is classified before it may start (§6). */
         data class Start(val id: String, val startId: Int, val force: Boolean, val recovery: Boolean) : Command
         data class Stop(val startId: Int) : Command
+        /** An always-on start from Android; its profile is resolved off [onStartCommand] (see [alwaysOnTarget]). */
+        data class AlwaysOn(val startId: Int) : Command
         data class Invalid(val startId: Int, val reportError: Boolean) : Command
         data class Finished(val token: Long) : Command
     }
@@ -144,6 +146,14 @@ class BimeronVpnService : VpnService() {
             commands.trySend(Command.Stop(startId))
             return START_NOT_STICKY
         }
+        if (intent?.action == SERVICE_INTERFACE) {
+            // Android starts the always-on app's service with this action on boot, user unlock, package update
+            // and when always-on is turned on. The target needs a DataStore read, so it is resolved in order by
+            // the consumer and then classified like any other recovery start.
+            ensureForeground()
+            commands.trySend(Command.AlwaysOn(startId))
+            return START_STICKY
+        }
         val id = when (intent?.action) {
             START -> intent.getStringExtra(PROFILE)
             null -> getSharedPreferences(RECOVERY, MODE_PRIVATE).getString(ACTIVE_ID, null)
@@ -155,9 +165,9 @@ class BimeronVpnService : VpnService() {
         }
         ensureForeground()
         // Fail-safe: anything but the explicit user START is a recovery and is classified before it may start.
-        // Today only an action-less start (a sticky restart's null intent) gets here; VpnService.SERVICE_INTERFACE
-        // (always-on) resolves no id above and ends as Command.Invalid. A skipped recovery clears the recovery
-        // id and stops the service, so it is not restarted; START_STICKY is kept for starts that proceed.
+        // Here that is an action-less start (a sticky restart's null intent); always-on starts take the same path
+        // through Command.AlwaysOn. A skipped recovery clears the recovery id and stops the service, so it is not
+        // restarted; START_STICKY is kept for starts that proceed.
         val recovery = intent?.action != START
         commands.trySend(Command.Start(id, startId, intent?.getBooleanExtra(FORCE_RESTART, false) == true, recovery))
         return START_STICKY
@@ -219,9 +229,36 @@ class BimeronVpnService : VpnService() {
         override fun publishSkipped(token: Long) { VpnLive.publish(recoverySkippedState { getString(it) }, token) }
     }
 
+    /**
+     * An always-on start becomes a recovery [Command.Start] for [alwaysOnTarget]. A running session is kept as is
+     * (Android also sends this when always-on is turned on while connected); without a target the start ends quietly.
+     */
+    private suspend fun resolveAlwaysOn(command: Command.AlwaysOn): Command {
+        if (runJob?.isActive == true) return Command.Invalid(command.startId, reportError = false)
+        val recoveryId = withContext(Dispatchers.IO) {
+            getSharedPreferences(RECOVERY, MODE_PRIVATE).getString(ACTIVE_ID, null)
+        }
+        val selectedId = try {
+            readSelectedProfileId(applicationContext)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val id = alwaysOnTarget(recoveryId, selectedId)
+        if (id == null) {
+            AppEvents.add(R.string.journal_always_on_no_profile, LogLevel.WARNING)
+            return Command.Invalid(command.startId, reportError = false)
+        }
+        return Command.Start(id, command.startId, force = false, recovery = true)
+    }
+
     private suspend fun consumeCommands() {
         var acceptedStartId = 0
-        for (command in commands) {
+        for (received in commands) {
+            currentCoroutineContext().ensureActive()
+            if (destroyed) return
+            val command = if (received is Command.AlwaysOn) resolveAlwaysOn(received) else received
             currentCoroutineContext().ensureActive()
             if (destroyed) return
             when (command) {
@@ -284,6 +321,7 @@ class BimeronVpnService : VpnService() {
                     VpnLive.publish(failure?.let { failureState(it, old.attemptProfileId) } ?: VpnState(), token)
                     leaveForeground(command.startId)
                 }
+                is Command.AlwaysOn -> error("resolved above")
                 is Command.Finished -> {
                     if (!VpnLive.gate.accepts(command.token)) continue
                     runJob = null
