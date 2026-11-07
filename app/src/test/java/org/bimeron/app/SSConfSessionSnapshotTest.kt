@@ -286,6 +286,7 @@ class SSConfSessionSnapshotTest {
         } catch (e: CancellationException) {
             assertFalse(e is SSConfFailure)
         }
+        assertEquals("A stale attempt does not validate the stored snapshot", listOf("fetch"), calls.log)
         assertTrue(calls.fallbacks.isEmpty())
         assertNull(calls.committed)
     }

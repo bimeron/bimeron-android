@@ -1,6 +1,7 @@
 package org.bimeron.app
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -52,16 +53,17 @@ internal typealias SSConfLeaseScope = suspend (block: (SSConfFetchLease) -> Byte
  * Failures map only to [VpnErrorCode.SSCONF_NETWORK_UNAVAILABLE] or [VpnErrorCode.SSCONF_FETCH_FAILED].
  * Coroutine cancellation is rethrown as is. Native load Errors ([LinkageError]) are not mapped and
  * propagate out of [fetchSSConf]; [resolveSessionSnapshot] maps them to [VpnErrorCode.CORE_INCOMPATIBLE].
- *
- * [newRequest] is the native Core request in production. Instrumentation replaces only it (Core accepts
- * only HTTPS with a system-trusted certificate, which a test endpoint cannot have); the lease scope and
- * socket protection stay the production ones.
  */
-internal suspend fun fetchSSConf(
-    context: Context,
-    source: String,
-    newRequest: SSConfRequestFactory = ::coreSSConfRequest,
-): ByteArray = fetchSSConf(
+internal suspend fun fetchSSConf(context: Context, source: String): ByteArray =
+    fetchSSConf(context, source, ::coreSSConfRequest)
+
+/**
+ * [fetchSSConf] with the production lease scope and socket protection, and only the native Core request
+ * replaced by [newRequest]. For instrumentation (SSConfConnectFetchTest): Core accepts only HTTPS with a
+ * system-trusted certificate, which a test endpoint cannot have.
+ */
+@VisibleForTesting
+internal suspend fun fetchSSConf(context: Context, source: String, newRequest: SSConfRequestFactory): ByteArray = fetchSSConf(
     source,
     leaseScope = { block -> withSSConfNetwork(context) { lease -> block(lease.asFetchLease()) } },
     newRequest = newRequest,
@@ -203,6 +205,8 @@ internal suspend fun <T> resolveSessionSnapshot(
         if (failure.code !in FALLBACK_CODES) throw failure
         failure
     }
+    // A stale attempt stops here instead of validating the stored snapshot.
+    ensureAttempt()
     val fallback = usableStored() ?: throw failure
     onFallback(failure.code)
     return fallback
