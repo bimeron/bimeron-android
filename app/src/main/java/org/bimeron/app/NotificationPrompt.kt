@@ -33,9 +33,12 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * POST_NOTIFICATIONS policy (user decision #1, 2026-11-07).
  *
- * - API 33+: the first time the VPN reaches `connected` while the Activity is resumed and no VPN consent is
- *   pending, the app records that the decision was made and, if notifications are off, asks once.
- *   It never asks again automatically.
+ * - API 33+: the first time the VPN goes from a non-connected state to `connected` while the Activity is resumed
+ *   and no VPN consent is pending, the app records that the decision was made and, if notifications are off, asks
+ *   once. It never asks again automatically.
+ * - Only an observed transition counts: opening the app while the VPN is already connected (connect then Home,
+ *   or a background recovery reconnect) does not prompt and does not set the flag, so a later observed connect
+ *   still asks once. Each RESUMED period is a new [ResumedSession] whose first, replayed value is never a trigger.
  * - API < 33: nothing is requested and nothing is recorded.
  * - The "Notifications are off" row is shown whenever notifications are disabled, except on API 33+
  *   before the one-time request: there the default "off" state is not something the user chose yet.
@@ -53,14 +56,23 @@ internal object NotificationPolicy {
         REQUEST,
     }
 
-    fun onVpnState(sdkInt: Int, vpnState: String, consentPending: Boolean, alreadyAsked: Boolean, enabled: Boolean): Action = when {
+    /**
+     * [previousState] is the state observed just before [vpnState] in the same RESUMED session, or null for the first
+     * value of the session (the StateFlow replay of whatever the state already was).
+     */
+    fun onVpnState(sdkInt: Int, previousState: String?, vpnState: String, consentPending: Boolean, alreadyAsked: Boolean, enabled: Boolean): Action = when {
         sdkInt < RUNTIME_PERMISSION_SDK -> Action.NONE
         // Only after a successful connect: never next to the VPN consent dialog or before the tunnel is up.
         vpnState != "connected" || consentPending -> Action.NONE
+        // Only a non-connected -> connected transition seen while resumed; an already-connected replay is not one.
+        !isObservedConnect(previousState, vpnState) -> Action.NONE
         alreadyAsked -> Action.NONE
         enabled -> Action.MARK_ASKED
         else -> Action.REQUEST
     }
+
+    fun isObservedConnect(previousState: String?, vpnState: String): Boolean =
+        previousState != null && previousState != "connected" && vpnState == "connected"
 
     fun showOffRow(sdkInt: Int, enabled: Boolean, alreadyAsked: Boolean): Boolean =
         !enabled && (sdkInt < RUNTIME_PERMISSION_SDK || alreadyAsked)
@@ -83,8 +95,9 @@ internal class NotificationPromptStore(context: Context) {
 }
 
 /**
- * Activity-side coordination. MainActivity feeds it VPN state changes while resumed and calls [refresh] on
- * every resume and after the permission result; the store is the only state that survives recreation.
+ * Activity-side coordination. MainActivity opens a [ResumedSession] for every RESUMED period, feeds it the VPN
+ * states it observes and calls [refresh] on every resume and after the permission result; the store is the only
+ * state that survives recreation.
  */
 internal class NotificationPrompt(
     private val store: NotificationPromptStore,
@@ -96,12 +109,21 @@ internal class NotificationPrompt(
 
     fun refresh() { offRow.value = NotificationPolicy.showOffRow(sdkInt, enabled(), store.asked) }
 
-    /** Calls [request] at most once per install; the flag is committed first, and a failed commit skips the request. */
-    fun onVpnState(state: String, consentPending: Boolean, request: () -> Unit): NotificationPolicy.Action {
-        val action = NotificationPolicy.onVpnState(sdkInt, state, consentPending, store.asked, enabled())
-        if (action == NotificationPolicy.Action.NONE || !store.markAsked()) return NotificationPolicy.Action.NONE
-        if (action == NotificationPolicy.Action.REQUEST) request()
-        return action
+    /** A new session for each RESUMED period: its first value is a replay, not an observed transition. */
+    fun resumedSession(): ResumedSession = ResumedSession()
+
+    inner class ResumedSession internal constructor() {
+        private var previous: String? = null
+
+        /** Calls [request] at most once per install; the flag is committed first, and a failed commit skips the request. */
+        fun onVpnState(state: String, consentPending: Boolean, request: () -> Unit): NotificationPolicy.Action {
+            val before = previous
+            previous = state
+            val action = NotificationPolicy.onVpnState(sdkInt, before, state, consentPending, store.asked, enabled())
+            if (action == NotificationPolicy.Action.NONE || !store.markAsked()) return NotificationPolicy.Action.NONE
+            if (action == NotificationPolicy.Action.REQUEST) request()
+            return action
+        }
     }
 }
 

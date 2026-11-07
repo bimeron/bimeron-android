@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,8 +22,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * POST_NOTIFICATIONS decision #1 on a device: the system prompt appears once after the first connect and never again,
- * also after Activity recreation. The VPN state is published directly; no tunnel is started.
+ * POST_NOTIFICATIONS decision #1 on a device: the system prompt appears once after the first connect observed while
+ * the Activity is resumed and never again, also after Activity recreation. Opening the app while already connected
+ * does not prompt. The VPN state is published directly; no tunnel is started.
  */
 @RunWith(AndroidJUnit4::class)
 class NotificationPromptInstrumentedTest {
@@ -33,6 +35,7 @@ class NotificationPromptInstrumentedTest {
 
     @Before fun saveFlag() {
         savedFlag = if (preferences.contains(NotificationPromptStore.ASKED)) preferences.getBoolean(NotificationPromptStore.ASKED, false) else null
+        VpnLive.resetAfterProcessStart()
     }
 
     @After fun restore() {
@@ -72,12 +75,31 @@ class NotificationPromptInstrumentedTest {
         assertTrue(node.performAction(AccessibilityNodeInfo.ACTION_CLICK))
     }
 
+    private fun awaitResumed(scenario: ActivityScenario<MainActivity>, phase: String) {
+        assertTrue("$phase: activity not resumed (${scenario.state})", waitFor(10_000) { scenario.state == Lifecycle.State.RESUMED })
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+    /**
+     * Publishes [state] and lets the RESUMED collector observe it before the next value: a StateFlow collector may
+     * otherwise conflate back-to-back values and never see this one.
+     */
+    private fun publishObserved(state: String) {
+        VpnLive.state.value = VpnState(state)
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        SystemClock.sleep(OBSERVE_MS)
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    }
+
     @Test fun askedFlagPreventsPromptAcrossRecreation() {
         preferences.edit().putBoolean(NotificationPromptStore.ASKED, true).commit()
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            VpnLive.state.value = VpnState("connected")
+            awaitResumed(scenario, "launched")
+            publishObserved("connected")
             assertNoPrompt("connected")
             scenario.recreate()
+            awaitResumed(scenario, "recreated")
+            publishObserved("disconnected")
+            publishObserved("connected")
             assertNoPrompt("recreated")
         }
     }
@@ -87,24 +109,43 @@ class NotificationPromptInstrumentedTest {
         assumeTrue("permission must not be granted yet",
             app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
         preferences.edit().remove(NotificationPromptStore.ASKED).commit()
+        // Connected before the app is opened (connect then Home, or a background recovery reconnect).
+        VpnLive.state.value = VpnState("connected")
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            awaitResumed(scenario, "launched")
+            // The replayed "connected" is not an observed transition: no prompt, and the flag stays unset.
+            assertNoPrompt("opened while connected")
+            assertFalse("flag must stay unset after a replay", preferences.getBoolean(NotificationPromptStore.ASKED, false))
             // Not before connect: disconnected and connecting do not prompt.
+            publishObserved("disconnected")
             assertNoPrompt("disconnected", 1_500)
-            VpnLive.state.value = VpnState("connecting")
+            publishObserved("connecting")
             assertNoPrompt("connecting", 1_500)
             VpnLive.state.value = VpnState("connected")
-            assertTrue("prompt after first connect (${activePackage()})", waitFor(10_000) { permissionPromptShown() })
+            assertTrue("prompt after first observed connect (${activePackage()})", waitFor(10_000) { permissionPromptShown() })
             assertTrue("flag committed at launch", preferences.getBoolean(NotificationPromptStore.ASKED, false))
             // Dismiss without answering; the decision stays recorded.
             ui.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
             assertNoPrompt("dismissed")
-            VpnLive.state.value = VpnState("disconnected")
-            VpnLive.state.value = VpnState("connected")
+            awaitResumed(scenario, "dismissed")
+            // A real second transition: disconnected is observed before connected is published.
+            publishObserved("disconnected")
+            assertNoPrompt("second disconnect", 1_000)
+            publishObserved("connected")
             assertNoPrompt("second connect")
             scenario.recreate()
+            awaitResumed(scenario, "recreated")
             assertNoPrompt("recreated")
+            publishObserved("disconnected")
+            publishObserved("connected")
+            assertNoPrompt("connect after recreation")
             clickText(app.getString(R.string.settings))
             assertTrue("notifications-off row", waitText(app.getString(R.string.notifications_off_title)) != null)
         }
+    }
+
+    private companion object {
+        /** Bounded settle time after the main thread is idle, so the collector has run for the published value. */
+        const val OBSERVE_MS = 300L
     }
 }

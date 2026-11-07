@@ -45,10 +45,15 @@ Decision #1 (2026-11-07), implemented in `NotificationPrompt.kt` and wired in
 `MainActivity`:
 
 - API 33+: the app asks for `POST_NOTIFICATIONS` once, right after the first
-  successful connect (state `connected`) while the Activity is resumed. It never
+  successful connect, meaning the first change from a non-connected state to
+  `connected` that the app observes while the Activity is resumed. It never
   asks while the Android VPN consent dialog is up, while a consent result is
   pending, or before the tunnel is connected. If notifications are already on at
   that first connect, the decision is only recorded and nothing is shown.
+- Opening the app while the VPN is already connected (connect then Home, or a
+  background recovery reconnect) does not prompt: the state replayed at each
+  resume is not a transition. The flag stays unset in that case, so the next
+  observed connect still asks once.
 - The "already asked" flag (`notification_prompt` SharedPreferences,
   `post_notifications_asked`) is committed synchronously before the request is
   launched, so rotation, Activity recreation or process death while the system
@@ -70,11 +75,13 @@ Decision #1 (2026-11-07), implemented in `NotificationPrompt.kt` and wired in
 - Automated coverage: `NotificationPromptTest` (JVM/Robolectric: decision table,
   API < 33, consent flow, flag persistence across instances, request-once with a
   recreated controller, row shown/hidden with the system state, settings intent
-  extras), `A11yMainScreensTest` / `A11yLargeFontTest` (the row is one 48 dp
+  extras, no prompt and no flag for an already-connected replay at resume),
+  `A11yMainScreensTest` / `A11yLargeFontTest` (the row is one 48 dp
   button whose click label is "Open settings"; no clipping at font scale 2), and
-  `NotificationPromptInstrumentedTest` (API 33+ device: the system prompt
-  appears only after `connected`, once, not again after a second connect or
-  recreation, and the Settings row appears; with the flag set no prompt appears).
+  `NotificationPromptInstrumentedTest` (API 33+ device: no prompt when opened
+  while already connected; the system prompt appears only after an observed
+  change to `connected`, once, not again after a second connect or recreation,
+  and the Settings row appears; with the flag set no prompt appears).
 
 Manual device checklist (API 33+ unless noted):
 
@@ -83,6 +90,9 @@ Manual device checklist (API 33+ unless noted):
 2. Deny → Settings shows "Notifications are off"; tap it → the app's
    notification settings open.
 3. Rotate and disconnect/reconnect → no new prompt.
+   Fresh install variant: tap connect and press Home before it shows Connected (or let
+   recovery reconnect in the background), reopen → no prompt; disconnect and
+   connect again → the prompt appears once.
 4. Force-stop or swipe the app away, reopen and connect → no new prompt.
 5. Turn notifications on in system settings, return → the row is gone; turn them
    off again → the row is back, still no prompt.

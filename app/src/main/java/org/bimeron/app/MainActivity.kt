@@ -135,11 +135,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         JournalRuntime.start(applicationContext)
         // Only while resumed: the VPN consent dialog pauses this Activity, so the two prompts never overlap.
+        // Each RESUMED period is a new session, so opening the app while already connected is a replay, not a trigger.
         // A recreated Activity sees the committed flag and does not ask again.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                val session = notificationPrompt.resumedSession()
                 VpnLive.state.distinctUntilChangedBy { it.state }.collect { vpn ->
-                    notificationPrompt.onVpnState(vpn.state, model.pendingPermissionId != null, ::requestNotificationPermission)
+                    session.onVpnState(vpn.state, model.pendingPermissionId != null, ::requestNotificationPermission)
                 }
             }
         }
@@ -157,10 +159,9 @@ class MainActivity : ComponentActivity() {
         catch (_: ActivityNotFoundException) { notificationPrompt.refresh() }
     }
     private fun openNotificationSettings() {
-        try { startActivity(NotificationPolicy.settingsIntent(packageName)) }
-        catch (_: ActivityNotFoundException) {
-            runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))) }
-        }
+        // A missing activity (ActivityNotFoundException) or an OEM restriction (SecurityException) must not crash the app.
+        runCatching { startActivity(NotificationPolicy.settingsIntent(packageName)) }
+            .recoverCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))) }
     }
     private fun toggleVpn() {
         val state = VpnLive.state.value.state

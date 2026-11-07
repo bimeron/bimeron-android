@@ -33,8 +33,12 @@ class NotificationPromptTest {
     private val notifications get() = shadowOf(context.getSystemService(NotificationManager::class.java))
     private val vpnStates = listOf("disconnected", "permission", "connecting", "connected", "reconnecting", "stopping", "failed")
 
-    private fun decide(sdk: Int = 33, state: String = "connected", consent: Boolean = false, asked: Boolean = false, enabled: Boolean = false) =
-        NotificationPolicy.onVpnState(sdk, state, consent, asked, enabled)
+    private fun decide(sdk: Int = 33, previous: String? = "connecting", state: String = "connected", consent: Boolean = false, asked: Boolean = false, enabled: Boolean = false) =
+        NotificationPolicy.onVpnState(sdk, previous, state, consent, asked, enabled)
+
+    /** Feeds [states] to one RESUMED session and returns the action of each. */
+    private fun NotificationPrompt.ResumedSession.feed(vararg states: String, consent: Boolean = false, request: () -> Unit) =
+        states.map { onVpnState(it, consent, request) }
 
     @Test fun firstConnectWithoutFlagRequests() {
         assertEquals(Action.REQUEST, decide())
@@ -57,6 +61,42 @@ class NotificationPromptTest {
         vpnStates.filter { it != "connected" }.forEach { assertEquals(it, Action.NONE, decide(state = it)) }
         // A consent result still pending (pendingPermissionId) blocks the request even if a stale state says connected.
         assertEquals(Action.NONE, decide(consent = true))
+    }
+
+    @Test fun onlyAnObservedTransitionToConnectedCounts() {
+        // The first value of a RESUMED session (previous = null) is a replay, also when it is already connected.
+        assertEquals(Action.NONE, decide(previous = null))
+        assertEquals(Action.NONE, decide(previous = "connected"))
+        vpnStates.filter { it != "connected" }.forEach { assertEquals(it, Action.REQUEST, decide(previous = it)) }
+        assertFalse(NotificationPolicy.isObservedConnect(null, "connected"))
+        assertFalse(NotificationPolicy.isObservedConnect("connected", "connected"))
+        assertFalse(NotificationPolicy.isObservedConnect("connected", "disconnected"))
+        assertTrue(NotificationPolicy.isObservedConnect("disconnected", "connected"))
+        assertTrue(NotificationPolicy.isObservedConnect("reconnecting", "connected"))
+    }
+
+    /** Connect then Home, or a background recovery reconnect: opening the app while connected neither asks nor marks. */
+    @Test fun openedWhileConnectedSkipsReplayWithoutMarking() {
+        var launches = 0
+        val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 34) { false }
+        assertEquals(listOf(Action.NONE), prompt.resumedSession().feed("connected") { launches++ })
+        // Paused and resumed again while still connected: another replay.
+        assertEquals(listOf(Action.NONE), prompt.resumedSession().feed("connected") { launches++ })
+        assertFalse("a skipped replay must not set the flag", NotificationPromptStore(context).asked)
+        assertEquals(0, launches)
+        // A later transition observed while resumed still asks, once.
+        assertEquals(listOf(Action.NONE, Action.NONE, Action.REQUEST), prompt.resumedSession().feed("connected", "disconnected", "connected") { launches++ })
+        assertEquals(1, launches)
+        assertTrue(NotificationPromptStore(context).asked)
+        assertEquals(listOf(Action.NONE, Action.NONE, Action.NONE), prompt.resumedSession().feed("connected", "reconnecting", "connected") { launches++ })
+        assertEquals(1, launches)
+    }
+
+    @Test fun recoveryReconnectObservedWhileResumedCounts() {
+        var launches = 0
+        val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 33) { false }
+        assertEquals(listOf(Action.NONE, Action.NONE, Action.REQUEST), prompt.resumedSession().feed("connected", "reconnecting", "connected") { launches++ })
+        assertEquals(1, launches)
     }
 
     @Test fun alreadyEnabledOnlyRecordsTheDecision() {
@@ -94,21 +134,22 @@ class NotificationPromptTest {
         var flagAtLaunch = false
         val prompt = NotificationPrompt(store, sdkInt = 34) { false }
         val request = { launches++; flagAtLaunch = NotificationPromptStore(context).asked }
-        listOf("permission", "connecting", "connected", "disconnected", "connecting", "connected").forEach { prompt.onVpnState(it, false, request) }
+        prompt.resumedSession().feed("permission", "connecting", "connected", "disconnected", "connecting", "connected", request = request)
         assertEquals(1, launches)
         assertTrue("flag must be committed before the launch", flagAtLaunch)
         // Rotation or process death: a fresh controller over the same preferences does not ask again.
         val recreated = NotificationPrompt(NotificationPromptStore(context), sdkInt = 34) { false }
-        assertEquals(Action.NONE, recreated.onVpnState("connected", false, request))
+        assertEquals(listOf(Action.NONE, Action.NONE), recreated.resumedSession().feed("disconnected", "connected", request = request))
         assertEquals(1, launches)
     }
 
     @Test fun consentPendingDefersUntilConnectedWithoutConsent() {
         var launches = 0
         val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 33) { false }
-        assertEquals(Action.NONE, prompt.onVpnState("connected", true) { launches++ })
+        val session = prompt.resumedSession()
+        assertEquals(listOf(Action.NONE, Action.NONE), session.feed("disconnected", "connected", consent = true) { launches++ })
         assertFalse(NotificationPromptStore(context).asked)
-        assertEquals(Action.REQUEST, prompt.onVpnState("connected", false) { launches++ })
+        assertEquals(listOf(Action.NONE, Action.REQUEST), session.feed("disconnected", "connected") { launches++ })
         assertEquals(1, launches)
     }
 
@@ -116,9 +157,9 @@ class NotificationPromptTest {
         var enabled = true
         var launches = 0
         val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 34) { enabled }
-        assertEquals(Action.MARK_ASKED, prompt.onVpnState("connected", false) { launches++ })
+        assertEquals(listOf(Action.NONE, Action.MARK_ASKED), prompt.resumedSession().feed("disconnected", "connected") { launches++ })
         enabled = false
-        assertEquals(Action.NONE, prompt.onVpnState("connected", false) { launches++ })
+        assertEquals(listOf(Action.NONE, Action.NONE), prompt.resumedSession().feed("disconnected", "connected") { launches++ })
         assertEquals(0, launches)
         prompt.refresh()
         assertTrue(prompt.showOffRow.value)
@@ -128,7 +169,7 @@ class NotificationPromptTest {
         var enabled = false
         var launches = 0
         val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 32) { enabled }
-        assertEquals(Action.NONE, prompt.onVpnState("connected", false) { launches++ })
+        assertEquals(listOf(Action.NONE, Action.NONE), prompt.resumedSession().feed("disconnected", "connected") { launches++ })
         assertEquals(0, launches)
         assertFalse(NotificationPromptStore(context).asked)
         prompt.refresh(); assertTrue(prompt.showOffRow.value)
@@ -141,7 +182,7 @@ class NotificationPromptTest {
         val manager = androidx.core.app.NotificationManagerCompat.from(context)
         notifications.setNotificationsEnabled(false)
         val prompt = NotificationPrompt(NotificationPromptStore(context), sdkInt = 34) { manager.areNotificationsEnabled() }
-        prompt.onVpnState("connected", false) {}
+        prompt.resumedSession().feed("disconnected", "connected") {}
         prompt.refresh()
         var opened = 0
         compose.setContent {
