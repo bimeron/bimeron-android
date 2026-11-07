@@ -2,7 +2,7 @@
     <string name="app_name">Bimeron</string>
     <string name="vpn_notification_channel">VPN Bimeron</string>
     <string name="vpn_notification_text">Подключение активно</string>
-    <string name="vpn_recovery_notification_channel">Переподключение VPN</string>
+    <string name="vpn_recovery_notification_channel">Оповещения VPN</string>
     <string name="vpn_recovery_notification_text">Нажмите, чтобы переподключиться</string>
     <string name="vpn_drop_notification_title">VPN отключён</string>
     <string name="vpn_drop_notification_text">Bimeron больше не защищает ваш трафик. Нажмите, чтобы открыть приложение.</string>
@@ -77,6 +77,7 @@
     <string name="power">Питание VPN</string>
     <string name="back">Назад</string>
     <string name="switch_profile_title">Переподключить VPN?</string>
+    <string name="switch_disconnect_title">Отключить VPN?</string>
     <string name="switch_profile_message">Для выбора профиля «%1$s» нужно прервать текущее подключение.</string>
     <string name="switch_profile_action">Переподключить</string>
     <string name="delete_active_warning">VPN-подключение этого профиля будет остановлено.</string>

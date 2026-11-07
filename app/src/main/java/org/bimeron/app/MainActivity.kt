@@ -261,7 +261,8 @@ private fun BimeronApp(model: AppModel, export: ProfileExport, onExport: () -> U
         if (addChoice) AlertDialog(onDismissRequest = { addChoice = false }, title = { Text(stringResource(R.string.add_profile)) }, text = { Column { Text(stringResource(R.string.supported_keys), style = MaterialTheme.typography.bodySmall); Spacer(Modifier.height(12.dp)); TextButton(onClick = { addChoice = false; model.clearError(); page = Page.ADD }) { Text(stringResource(R.string.paste_key)) }; TextButton(onClick = { addChoice = false; onImport() }) { Text(stringResource(R.string.import_conf)) } } }, confirmButton = { TextButton(onClick = { addChoice = false }) { Text(stringResource(R.string.cancel)) } })
         if (pendingSwitch != null) {
             val target = profiles.firstOrNull { it.id == pendingSwitch }
-            AlertDialog(onDismissRequest = model::cancelSwitch, title = { Text(stringResource(R.string.switch_profile_title)) },
+            AlertDialog(onDismissRequest = model::cancelSwitch,
+                title = { Text(stringResource(if (target?.startsAsSystemVpn == true) R.string.switch_profile_title else R.string.switch_disconnect_title)) },
                 text = { Text(stringResource(when {
                     target?.startsAsSystemVpn == true -> R.string.switch_profile_message
                     target?.mode == "vpn" -> R.string.switch_unsupported_message
