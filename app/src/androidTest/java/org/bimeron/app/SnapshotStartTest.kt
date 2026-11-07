@@ -13,7 +13,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.bimeron.core.androidcore.Androidcore
 import org.bimeron.core.androidcore.SocketProtector
-import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -25,8 +24,8 @@ import org.junit.runner.RunWith
 
 /**
  * Contract §13.2 SnapshotStartTest, at the level reachable without a server or a started VPN: the
- * service's snapshot step ([loadSessionSnapshot], exactly as runSession calls it) with a real
- * [ProfileStore] in a private test directory and real native Core validation. The service itself is
+ * service's snapshot step ([loadSessionSnapshot], exactly as runSession calls it) with the process-wide
+ * [ProfileStore] the service itself uses (contract D5) and real native Core validation. The service itself is
  * not started, so no Session, TUN or consent is involved; a fetch is either the real [fetchSSConf]
  * (which must never run) or a counting fake that returns a valid body. A recovery start never fetches;
  * a user connect always fetches once (see [SSConfConnectFetchTest] for the bound network).
@@ -37,16 +36,20 @@ class SnapshotStartTest {
     private val source = "ssconf://snapshot-start.invalid/config"
     private val valid = "ss://YWVzLTEyOC1nY206cGFzcw@192.0.2.10:8388".toByteArray()
     private val replacement = "ss://YWVzLTEyOC1nY206b3RoZXI@192.0.2.11:8388".toByteArray()
-    private val root = File(context.cacheDir, "snapshot-start-${UUID.randomUUID()}")
-    private val store by lazy {
-        ProfileStore(null, File(root, "profiles").apply { mkdirs() }, SshProfileResources(File(root, "ssh-resources"))) {}
-    }
+    private val store by lazy { runBlocking { sharedStore(context) } }
     private val id = UUID.randomUUID()
 
-    @After fun cleanUp() { root.deleteRecursively() }
+    /**
+     * Runs [body] between two deletions of every profile named [FIXTURE]: the first removes leftovers of an
+     * aborted run, the second this test's fixture. Deleting a profile also deletes its ssconf snapshot.
+     */
+    private fun withFixture(body: suspend () -> Unit) = runBlocking {
+        store.deleteFixturesNamed(FIXTURE)
+        runThenCleanUp({ body() }) { store.deleteFixturesNamed(FIXTURE) }
+    }
 
     private suspend fun saveProfile() {
-        assertTrue(store.compareAndSave(UUID.randomUUID(), id, null, Conf.fromKey("Snapshot start", source), null)
+        assertTrue(store.compareAndSave(UUID.randomUUID(), id, null, Conf.fromKey(FIXTURE, source), null)
             is CommitResult.Committed)
     }
 
@@ -81,7 +84,7 @@ class SnapshotStartTest {
         Androidcore.newSSConfSnapshot(source, replacement)
     }
 
-    @Test fun recoveryWithValidPersistedSnapshotStartsWithoutFetch() = runBlocking {
+    @Test fun recoveryWithValidPersistedSnapshotStartsWithoutFetch() = withFixture {
         saveProfile()
         persist(valid)
         val state = VpnLive.state.value
@@ -100,7 +103,7 @@ class SnapshotStartTest {
         session.stop()
     }
 
-    @Test fun userConnectWithValidPersistedSnapshotFetchesOnceAndReplaces() = runBlocking {
+    @Test fun userConnectWithValidPersistedSnapshotFetchesOnceAndReplaces() = withFixture {
         saveProfile()
         persist(valid)
         var fetches = 0
@@ -109,10 +112,11 @@ class SnapshotStartTest {
         assertArrayEquals(replacement, store.readForSession(id.toString()) { true }.snapshot!!.body)
     }
 
-    @Test fun corruptPersistedSnapshotIsReplacedByTheUserConnectFetch() = runBlocking {
+    @Test fun corruptPersistedSnapshotIsReplacedByTheUserConnectFetch() = withFixture {
         saveProfile()
         persist(valid)
-        val file = File(root, "ssconf/$id.snap")
+        // The store keeps snapshots in ssconf/ beside its profiles directory, under the app's files directory.
+        val file = File(context.filesDir, "ssconf/$id.snap")
         val bytes = file.readBytes()
         file.writeBytes(bytes.copyOf().also { it[it.size / 2] = (it[it.size / 2].toInt() xor 1).toByte() })
         assertNull(store.readForSession(id.toString()) { true }.snapshot)
@@ -123,7 +127,7 @@ class SnapshotStartTest {
     }
 
     /** A recovery start discards a Core-rejected persisted body and, never fetching, needs the user. */
-    @Test fun coreRejectedPersistedSnapshotIsDiscardedOnRecoveryWithoutFetch() = runBlocking {
+    @Test fun coreRejectedPersistedSnapshotIsDiscardedOnRecoveryWithoutFetch() = withFixture {
         saveProfile()
         persist("not a shadowsocks body".toByteArray())
         assertNotNull(store.readForSession(id.toString()) { true }.snapshot)
@@ -136,5 +140,9 @@ class SnapshotStartTest {
         }
         assertEquals(0, fetches)
         assertNull(store.readForSession(id.toString()) { true }.snapshot)
+    }
+
+    private companion object {
+        const val FIXTURE = "Snapshot start fixture"
     }
 }
