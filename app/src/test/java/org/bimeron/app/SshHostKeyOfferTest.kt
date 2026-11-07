@@ -19,7 +19,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
-/** Strict parsing of `host_key` pendingAuth offers (core ADR 0035). */
+/** Strict parsing of `host_key` pendingAuth offers (core ADR 0037). */
 class SshHostKeyOfferTest {
     private fun parse(wire: String) = SshAuthenticationController.parse(wire)
     private fun rejected(wire: String, label: String = wire) {

@@ -255,7 +255,7 @@ internal fun teardownFailureCode(cleanupBlocked: Boolean, recoveryCleared: Boole
 }
 
 /**
- * Explicit SSH host-key faults of an opted-in session (core ADR 0035). They name the cause, so they take
+ * Explicit SSH host-key faults of an opted-in session (core ADR 0037). They name the cause, so they take
  * precedence over the [AuthHistory] guess. `ssh_host_key_unknown` (no offer could be made) stays generic.
  */
 internal val SSH_HOST_KEY_FAULTS = mapOf(
@@ -779,7 +779,7 @@ internal suspend fun sessionInputFor(
 internal fun recoverySkippedState(text: (Int) -> String): VpnState = failureState(VpnErrorCode.RECOVERY_NEEDS_USER, text)
 
 /**
- * Accept-new host-key opt-in bytes for [input] (core ADR 0035), or null for no opt-in. Every possibly SSH
+ * Accept-new host-key opt-in bytes for [input] (core ADR 0037), or null for no opt-in. Every possibly SSH
  * profile opts in (the conservative [sshCapable] classification), even with no stored keys, so an unknown
  * host is offered instead of failing; an imported KnownHostsFile stays trusted alongside. Runs before the
  * native session is created, guarded by [token] on both sides.

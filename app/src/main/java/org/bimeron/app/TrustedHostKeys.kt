@@ -12,7 +12,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 
 /**
- * App-owned SSH host keys accepted through accept-new offers (core ADR 0035): one plain known_hosts file per
+ * App-owned SSH host keys accepted through accept-new offers (core ADR 0037): one plain known_hosts file per
  * profile, `<filesDir>/trusted-hosts/<uuid>.known_hosts` (directory 0700, file 0600). The directory is its
  * own top-level tree, outside `profiles/`, `ssconf/` and `ssh-resources/`, so the store's fail-closed orphan
  * sweep never sees it. Lines are only ever ones Core offered and the user trusted, one per line.

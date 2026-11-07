@@ -34,7 +34,7 @@ The fetch model follows Outline dynamic access keys: a user-initiated connect fe
 
 ## SSH host keys
 
-Core ADR 0035 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-key offers".
+Core ADR 0037 (accept-new, opt-in) and `core: docs/android-ssh-auth.md`, "Host-key offers".
 
 - Every SSH-capable profile opts in: `BimeronVpnService.runSession` reads the profile's stored lines on IO,
   after the single session-input read and before any native session, with the attempt token checked on both

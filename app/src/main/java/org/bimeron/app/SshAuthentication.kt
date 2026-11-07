@@ -117,7 +117,7 @@ internal class SshAuthenticationController {
 
     companion object {
         const val HOST_KEY_KIND = "host_key"
-        /** The only reply that accepts a host-key offer (core ADR 0035). */
+        /** The only reply that accepts a host-key offer (core ADR 0037). */
         const val HOST_KEY_ACCEPT = "[\"accept\"]"
         /** SSH public-key types Core can offer in accept-new mode (no certificates; Core omits ssh-dss there). */
         private val HOST_KEY_TYPES = setOf(

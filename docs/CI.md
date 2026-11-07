@@ -13,7 +13,10 @@ contents permission and a 45-minute timeout.
 3. Pinned core AAR: `scripts/verify_core_aar.py` checks the SHA-256 recorded in
    [CORE-AAR.md](CORE-AAR.md) and 16 KiB native alignment of all four ABIs.
 4. Offline script self-tests: `test_verify_core_aar.py`,
-   `test_native_alignment.py`, `test_connected_test_runner.py`.
+   `test_native_alignment.py`, `test_connected_test_runner.py`,
+   `test_rebuild_core_aar.py` (canonical source path, signal cleanup, build
+   environment filtering and disabled version detection of the core AAR rebuild
+   helper, without a real build).
 5. Build, unit tests and lint:
 
    ```sh
@@ -36,6 +39,7 @@ python3 scripts/verify_core_aar.py
 python3 scripts/test_verify_core_aar.py
 python3 scripts/test_native_alignment.py
 python3 scripts/test_connected_test_runner.py
+python3 scripts/test_rebuild_core_aar.py
 ```
 
 Pinned inputs improve repeatability but do not prove bit-for-bit APK or core
